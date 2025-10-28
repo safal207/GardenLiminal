@@ -2,6 +2,7 @@ pub mod mem;
 pub mod liminal;
 pub mod cas;
 pub mod pacts;
+pub mod oci;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};

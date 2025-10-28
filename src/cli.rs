@@ -44,6 +44,11 @@ enum Commands {
         #[command(subcommand)]
         command: GardenCommands,
     },
+    /// OCI Image commands
+    Image {
+        #[command(subcommand)]
+        command: ImageCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -70,6 +75,25 @@ enum GardenCommands {
     },
 }
 
+#[derive(Subcommand)]
+enum ImageCommands {
+    /// Import an OCI image from tar or directory
+    Import {
+        /// Path to OCI image (tar, tar.gz, or directory)
+        source: PathBuf,
+
+        /// Optional store path (default: ./oci-store)
+        #[arg(long, default_value = "./oci-store")]
+        store_path: PathBuf,
+    },
+    /// List imported OCI images
+    List {
+        /// Optional store path (default: ./oci-store)
+        #[arg(long, default_value = "./oci-store")]
+        store_path: PathBuf,
+    },
+}
+
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
 
@@ -84,6 +108,10 @@ pub fn run() -> Result<()> {
                 store,
                 metrics_interval,
             } => cmd_garden_run(file, store, metrics_interval),
+        },
+        Commands::Image { command } => match command {
+            ImageCommands::Import { source, store_path } => cmd_image_import(source, store_path),
+            ImageCommands::List { store_path } => cmd_image_list(store_path),
         },
     }
 }
@@ -194,4 +222,51 @@ fn cmd_garden_run(file: PathBuf, store_kind: String, metrics_interval: u64) -> R
 
     tracing::info!("Pod exited with code: {}", exit_code);
     std::process::exit(exit_code);
+}
+
+fn cmd_image_import(source: PathBuf, store_path: PathBuf) -> Result<()> {
+    use crate::store::oci::OCIManager;
+
+    tracing::info!("Importing OCI image from: {}", source.display());
+    tracing::info!("Store path: {}", store_path.display());
+
+    let mut manager = OCIManager::new(store_path)?;
+
+    let manifest_digest = manager.import(&source)?;
+
+    println!("Successfully imported OCI image");
+    println!("Manifest digest: {}", manifest_digest);
+    println!();
+    println!("To use this image in a Garden, reference it in rootfs config:");
+    println!("  rootfs:");
+    println!("    oci:");
+    println!("      manifest: \"{}\"", manifest_digest);
+
+    Ok(())
+}
+
+fn cmd_image_list(store_path: PathBuf) -> Result<()> {
+    tracing::info!("Listing OCI images in: {}", store_path.display());
+
+    // For MVP, just show store path and CAS contents
+    println!("OCI Image Store: {}", store_path.display());
+    println!();
+
+    // Check if store exists
+    if !store_path.exists() {
+        println!("Store directory does not exist yet.");
+        println!("Import an image with: gl image import <path>");
+        return Ok(());
+    }
+
+    // List any index.json files or imported manifests
+    // For MVP, just show directory structure
+    println!("Store contents:");
+    if let Ok(entries) = std::fs::read_dir(&store_path) {
+        for entry in entries.flatten() {
+            println!("  - {}", entry.file_name().to_string_lossy());
+        }
+    }
+
+    Ok(())
 }
