@@ -27,6 +27,16 @@ pub enum EventType {
     PodHealth,
     PodExit,
     Metric,
+
+    // Iteration 3 - Root & Nerves
+    ContainerForked,
+    ExecFailed,
+    SignalForward,
+    PodStopRequested,
+    PodTimeout,
+    OciImport,
+    MountOverlayDone,
+    MountOverlaySkipped,
 }
 
 /// Structured event for logging and storage
@@ -243,6 +253,7 @@ impl EventBuilder {
 }
 
 /// Garden event builder (Iteration 2)
+#[derive(Clone)]
 pub struct GardenEventBuilder {
     run_id: String,
     garden_id: String,
@@ -304,5 +315,56 @@ impl GardenEventBuilder {
     pub fn metric(&self, container_name: &str, metrics: &crate::metrics::ContainerMetrics) -> Event {
         self.build_container(container_name.to_string(), EventType::Metric)
             .with_data(crate::metrics::metrics_to_json(metrics))
+    }
+
+    // Iteration 3 events
+    pub fn container_forked(&self, container_name: &str, pid: i32) -> Event {
+        self.build_container(container_name.to_string(), EventType::ContainerForked)
+            .with_msg(format!("Container {} forked with PID {}", container_name, pid))
+            .with_data(serde_json::json!({"pid": pid}))
+    }
+
+    pub fn exec_failed(&self, container_name: &str, errno: &str) -> Event {
+        self.build_container(container_name.to_string(), EventType::ExecFailed)
+            .with_level(LogLevel::Error)
+            .with_error(format!("exec failed: {}", errno))
+            .with_data(serde_json::json!({"errno": errno}))
+    }
+
+    pub fn signal_forward(&self, signal: &str, container_name: &str) -> Event {
+        self.build_container(container_name.to_string(), EventType::SignalForward)
+            .with_msg(format!("Forwarding signal {} to container {}", signal, container_name))
+            .with_data(serde_json::json!({"signal": signal}))
+    }
+
+    pub fn pod_stop_requested(&self) -> Event {
+        self.build(EventType::PodStopRequested)
+            .with_msg("Pod stop requested")
+    }
+
+    pub fn pod_timeout(&self, timeout_ms: u64) -> Event {
+        self.build(EventType::PodTimeout)
+            .with_level(LogLevel::Warn)
+            .with_msg(format!("Pod timeout after {}ms", timeout_ms))
+            .with_data(serde_json::json!({"timeout_ms": timeout_ms}))
+    }
+
+    pub fn oci_import(&self, digest: &str, layers: usize) -> Event {
+        self.build(EventType::OciImport)
+            .with_msg(format!("Imported OCI image: {} ({} layers)", digest, layers))
+            .with_data(serde_json::json!({"digest": digest, "layers": layers}))
+    }
+
+    pub fn mount_overlay_done(&self, lowers: usize, upper: &str) -> Event {
+        self.build(EventType::MountOverlayDone)
+            .with_msg(format!("OverlayFS mounted: {} lower layers, upper: {}", lowers, upper))
+            .with_data(serde_json::json!({"lowers": lowers, "upper": upper}))
+    }
+
+    pub fn mount_overlay_skipped(&self, reason: &str) -> Event {
+        self.build(EventType::MountOverlaySkipped)
+            .with_level(LogLevel::Warn)
+            .with_msg(format!("OverlayFS skipped: {}", reason))
+            .with_data(serde_json::json!({"reason": reason}))
     }
 }

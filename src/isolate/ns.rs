@@ -79,3 +79,24 @@ pub fn write_file(path: &str, content: &str) -> Result<()> {
 pub fn deny_setgroups() -> Result<()> {
     write_file("/proc/self/setgroups", "deny")
 }
+
+/// Enter an existing network namespace
+pub fn setns_net(netns_path: &str) -> Result<()> {
+    use std::os::unix::io::AsRawFd;
+
+    let file = fs::File::open(netns_path)
+        .with_context(|| format!("Failed to open netns: {}", netns_path))?;
+
+    let fd = file.as_raw_fd();
+
+    unsafe {
+        let ret = nix::libc::setns(fd, nix::libc::CLONE_NEWNET as i32);
+        if ret != 0 {
+            anyhow::bail!("Failed to setns: {}", std::io::Error::last_os_error());
+        }
+    }
+
+    tracing::debug!("Entered network namespace: {}", netns_path);
+
+    Ok(())
+}

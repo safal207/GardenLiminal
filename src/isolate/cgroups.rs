@@ -134,3 +134,59 @@ pub fn cleanup_cgroup(seed_id: &str) -> Result<()> {
 
     Ok(())
 }
+
+/// Setup cgroup for a container in a garden (pod)
+/// Creates cgroup at: /sys/fs/cgroup/garden/<garden_id>/<container_name>
+pub fn setup_cgroup_for_container(
+    garden_id: &str,
+    container_name: &str,
+    limits: &crate::seed::LimitsConfig,
+) -> Result<()> {
+    let cgroup_path = get_container_cgroup_path(garden_id, container_name)?;
+
+    // Create cgroup directory
+    create_cgroup(&cgroup_path)?;
+
+    // Apply CPU limits
+    if let Some(shares) = limits.cpu.shares {
+        set_cpu_weight(&cgroup_path, shares)?;
+    }
+
+    // Apply memory limits
+    if let Some(ref max) = limits.memory.max {
+        let bytes = parse_memory_string(max)
+            .with_context(|| format!("Failed to parse memory limit: {}", max))?;
+        set_memory_max(&cgroup_path, bytes)?;
+    }
+
+    // Apply PID limits
+    if let Some(max) = limits.pids.max {
+        set_pids_max(&cgroup_path, max)?;
+    }
+
+    tracing::debug!("Applied container cgroups at: {}", cgroup_path.display());
+
+    Ok(())
+}
+
+/// Get cgroup path for container in garden
+/// Format: /sys/fs/cgroup/garden/<garden_id>/<container_name>
+fn get_container_cgroup_path(garden_id: &str, container_name: &str) -> Result<PathBuf> {
+    let path = Path::new(CGROUP_ROOT)
+        .join("garden")
+        .join(garden_id)
+        .join(container_name);
+    Ok(path)
+}
+
+/// Move a PID into a cgroup
+pub fn move_pid_to_cgroup(cgroup_path: &str, pid: i32) -> Result<()> {
+    let procs_path = Path::new(cgroup_path).join("cgroup.procs");
+
+    fs::write(&procs_path, format!("{}\n", pid))
+        .with_context(|| format!("Failed to add PID {} to cgroup {}", pid, cgroup_path))?;
+
+    tracing::debug!("Moved PID {} to cgroup {}", pid, cgroup_path);
+
+    Ok(())
+}

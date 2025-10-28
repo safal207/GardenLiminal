@@ -1,8 +1,12 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
+use nix::sys::prctl;
+use nix::sys::signal::Signal;
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
-use nix::unistd::Pid;
+use nix::unistd::{self, ForkResult, Pid};
 use std::collections::HashMap;
+use std::ffi::CString;
+use std::os::unix::process::CommandExt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -154,6 +158,15 @@ impl PodSupervisor {
     pub fn start(&mut self) -> Result<()> {
         let events = GardenEventBuilder::new(self.run_id.clone(), self.garden.meta.id.clone());
 
+        // Make this process a subreaper to collect zombie processes
+        unsafe {
+            if nix::libc::prctl(nix::libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0 {
+                tracing::warn!("Failed to set child subreaper: {}", std::io::Error::last_os_error());
+            } else {
+                tracing::debug!("Set process as child subreaper");
+            }
+        }
+
         // Store garden manifest
         self.store_garden_manifest()?;
 
@@ -212,30 +225,184 @@ impl PodSupervisor {
         container.state = ContainerState::Starting;
         container.last_start = Some(Instant::now());
 
-        // TODO: Fork and exec container
-        // For now, just mark as running (stub)
-        container.state = ContainerState::Running;
-        container.pid = Some(12345); // Stub PID
+        // Prepare rootfs (OverlayFS or direct path)
+        let rootfs = overlay::prepare_rootfs(&container.name, &container.spec.rootfs)?;
+        tracing::debug!("Rootfs prepared at: {}", rootfs.display());
 
-        // Emit event
-        let evt = events.container_start(&container.name, container.pid.unwrap());
-        self.store.append_event(&self.run_id, &evt.to_json()?)?;
+        // Setup cgroups for container
+        cgroups::setup_cgroup_for_container(
+            &self.garden.meta.id,
+            &container.name,
+            &container.spec.limits,
+        )?;
 
-        tracing::info!("Container {} started with PID {}", container.name, container.pid.unwrap());
+        // Clone data for child process
+        let container_spec = container.spec.clone();
+        let container_name = container.name.clone();
+        let garden_id = self.garden.meta.id.clone();
+        let run_id = self.run_id.clone();
+        let store = Arc::clone(&self.store);
+        let events_clone = events.clone();
+        let netns_name = self.netns_name.clone();
 
-        Ok(())
+        // Fork: parent waits, child execs
+        match unsafe { unistd::fork() }.context("Failed to fork container process")? {
+            ForkResult::Parent { child } => {
+                // Parent: store PID and emit event
+                let pid = child.as_raw();
+                container.pid = Some(pid);
+                container.state = ContainerState::Running;
+
+                // Emit container forked event
+                let evt = events.container_forked(&container.name, pid);
+                self.store.append_event(&self.run_id, &evt.to_json()?)?;
+
+                tracing::info!("Container {} forked with PID {}", container.name, pid);
+
+                Ok(())
+            }
+            ForkResult::Child => {
+                // Child: setup and exec
+                // Clone again for error handling
+                let container_name_err = container_name.clone();
+                let run_id_err = run_id.clone();
+                let store_err = Arc::clone(&store);
+                let events_err = events_clone.clone();
+
+                if let Err(e) = Self::container_child_exec(
+                    container_spec,
+                    container_name,
+                    garden_id,
+                    run_id,
+                    store,
+                    events_clone,
+                    rootfs,
+                    netns_name,
+                ) {
+                    eprintln!("Container exec failed: {:?}", e);
+
+                    // Try to emit exec_failed event
+                    let errno = format!("{:?}", e);
+                    let evt = events_err.exec_failed(&container_name_err, &errno);
+                    let _ = store_err.append_event(&run_id_err, &evt.to_json().unwrap_or_default());
+
+                    std::process::exit(127);
+                }
+                unreachable!("exec should not return");
+            }
+        }
+    }
+
+    /// Child process: apply isolation and exec container
+    fn container_child_exec(
+        spec: Container,
+        container_name: String,
+        garden_id: String,
+        run_id: String,
+        store: Arc<dyn Store>,
+        events: GardenEventBuilder,
+        rootfs: std::path::PathBuf,
+        netns_name: String,
+    ) -> Result<()> {
+        use std::os::unix::fs::MetadataExt;
+
+        // Set PR_SET_PDEATHSIG: child gets SIGKILL if parent dies
+        unsafe {
+            prctl::set_pdeathsig(Signal::SIGKILL)
+                .context("Failed to set PR_SET_PDEATHSIG")?;
+        }
+
+        // Create new session
+        unistd::setsid().context("Failed to setsid")?;
+
+        // Enter network namespace if pod has one
+        let netns_path = format!("/var/run/netns/{}", netns_name);
+        if std::path::Path::new(&netns_path).exists() {
+            crate::isolate::ns::setns_net(&netns_path)
+                .context("Failed to enter pod network namespace")?;
+        }
+
+        // Mount rootfs (chroot for MVP, pivot_root later)
+        crate::isolate::mount::do_chroot(&rootfs)
+            .context("Failed to chroot to rootfs")?;
+
+        // Mount proc if specified
+        for mount in &spec.mounts {
+            if mount.mount_type == "proc" {
+                crate::isolate::mount::mount_proc(&mount.target)
+                    .context("Failed to mount proc")?;
+            }
+        }
+
+        // Move process into container cgroup
+        let cgroup_path = format!("/sys/fs/cgroup/garden/{}/{}", garden_id, container_name);
+        cgroups::move_pid_to_cgroup(&cgroup_path, unistd::getpid().as_raw())?;
+
+        // Change to working directory
+        let cwd = &spec.entrypoint.cwd;
+        std::env::set_current_dir(cwd)
+            .with_context(|| format!("Failed to chdir to {}", cwd))?;
+
+        // Setup environment variables
+        for env_var in &spec.entrypoint.env {
+            if let Some(eq_pos) = env_var.find('=') {
+                let key = &env_var[..eq_pos];
+                let value = &env_var[eq_pos + 1..];
+                std::env::set_var(key, value);
+            }
+        }
+
+        // Apply no_new_privs
+        unsafe {
+            if nix::libc::prctl(nix::libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
+                anyhow::bail!("Failed to set no_new_privs");
+            }
+        }
+
+        // Apply seccomp (stub for now)
+        // TODO: Apply actual seccomp profile from garden.security
+
+        // Prepare execve arguments
+        let program = CString::new(spec.entrypoint.cmd[0].as_str())
+            .context("Invalid program path")?;
+
+        let args: Result<Vec<CString>> = spec
+            .entrypoint
+            .cmd
+            .iter()
+            .map(|s| CString::new(s.as_str()).context("Invalid argument"))
+            .collect();
+        let args = args?;
+
+        // Emit container start event
+        let pid = unistd::getpid().as_raw();
+        let evt = events.container_start(&container_name, pid);
+        store.append_event(&run_id, &evt.to_json()?)?;
+
+        // Exec (this replaces the current process)
+        unistd::execv(&program, &args).context("Failed to execv")?;
+
+        unreachable!("exec should not return");
     }
 
     /// Tick - process container states and restarts
     pub fn tick(&mut self) -> Result<()> {
         let events = GardenEventBuilder::new(self.run_id.clone(), self.garden.meta.id.clone());
 
-        // Check for exited containers
+        // Check for exited processes using non-blocking waitpid
+        self.reap_exited_processes(&events)?;
+
+        // Check for containers that need restart
         for i in 0..self.containers.len() {
-            let container = &self.containers[i];
+            // Reset backoff if container has been stable
+            if self.containers[i].state == ContainerState::Running {
+                self.containers[i].reset_backoff_if_stable();
+            }
 
             // Check if container should be restarted
-            if container.should_restart(self.restart_policy) {
+            let should_restart = self.containers[i].should_restart(self.restart_policy);
+
+            if should_restart {
                 // Check crash loop protection
                 if self.is_crash_looping()? {
                     tracing::error!("Crash loop detected for pod {}", self.garden.meta.id);
@@ -245,6 +412,71 @@ impl PodSupervisor {
 
                 // Schedule restart with backoff
                 self.schedule_restart(i, &events)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Reap exited processes and update container states
+    fn reap_exited_processes(&mut self, events: &GardenEventBuilder) -> Result<()> {
+        use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
+        use nix::unistd::Pid;
+
+        loop {
+            // Non-blocking wait for any child process
+            match waitpid(Pid::from_raw(-1), Some(WaitPidFlag::WNOHANG)) {
+                Ok(WaitStatus::Exited(pid, exit_code)) => {
+                    tracing::info!("Process {} exited with code {}", pid, exit_code);
+
+                    // Find container with this PID and update its state
+                    if let Some(container) = self.containers.iter_mut().find(|c| c.pid == Some(pid.as_raw())) {
+                        container.state = ContainerState::Exited(exit_code);
+                        container.pid = None;
+
+                        // Emit container exit event
+                        let evt = events.container_exit(&container.name, exit_code);
+                        self.store.append_event(&self.run_id, &evt.to_json()?)?;
+
+                        tracing::info!("Container {} exited with code {}", container.name, exit_code);
+                    }
+                }
+                Ok(WaitStatus::Signaled(pid, signal, _)) => {
+                    tracing::warn!("Process {} killed by signal {:?}", pid, signal);
+
+                    // Find container with this PID and update its state
+                    if let Some(container) = self.containers.iter_mut().find(|c| c.pid == Some(pid.as_raw())) {
+                        let exit_code = 128 + signal as i32;
+                        container.state = ContainerState::Exited(exit_code);
+                        container.pid = None;
+
+                        // Emit container exit event
+                        let evt = events.container_exit(&container.name, exit_code);
+                        self.store.append_event(&self.run_id, &evt.to_json()?)?;
+
+                        tracing::warn!("Container {} killed by signal {:?}", container.name, signal);
+                    }
+                }
+                Ok(WaitStatus::StillAlive) => {
+                    // No more children to reap
+                    break;
+                }
+                Ok(_) => {
+                    // Other status (stopped, continued, etc.) - ignore for now
+                    continue;
+                }
+                Err(nix::errno::Errno::ECHILD) => {
+                    // No children exist
+                    break;
+                }
+                Err(nix::errno::Errno::EINTR) => {
+                    // Interrupted by signal, retry
+                    continue;
+                }
+                Err(e) => {
+                    tracing::warn!("waitpid error: {}", e);
+                    break;
+                }
             }
         }
 
@@ -283,13 +515,106 @@ impl PodSupervisor {
         Ok(())
     }
 
-    /// Stop all containers gracefully
+    /// Stop all containers gracefully with timeout
     pub fn stop_graceful(&mut self, timeout: Duration) -> Result<()> {
         let events = GardenEventBuilder::new(self.run_id.clone(), self.garden.meta.id.clone());
 
         tracing::info!("Stopping pod gracefully (timeout: {:?})", timeout);
 
-        self.stop_all(&events)?;
+        // Emit pod stop requested event
+        let evt = events.pod_stop_requested();
+        self.store.append_event(&self.run_id, &evt.to_json()?)?;
+
+        // Send SIGTERM to all running containers
+        for container in &self.containers {
+            if let Some(pid) = container.pid {
+                tracing::info!("Sending SIGTERM to container {} (PID {})", container.name, pid);
+
+                // Emit signal forward event
+                let evt = events.signal_forward("SIGTERM", &container.name);
+                self.store.append_event(&self.run_id, &evt.to_json()?)?;
+
+                // Send SIGTERM
+                if let Err(e) = nix::sys::signal::kill(
+                    nix::unistd::Pid::from_raw(pid),
+                    nix::sys::signal::Signal::SIGTERM,
+                ) {
+                    tracing::warn!("Failed to send SIGTERM to PID {}: {}", pid, e);
+                }
+            }
+        }
+
+        // Wait for containers to exit gracefully
+        let start = Instant::now();
+        while start.elapsed() < timeout {
+            // Reap any exited processes
+            self.reap_exited_processes(&events)?;
+
+            // Check if all containers have exited
+            let all_exited = self.containers.iter().all(|c| c.pid.is_none());
+            if all_exited {
+                tracing::info!("All containers exited gracefully");
+                self.cleanup_after_stop(&events)?;
+                return Ok(());
+            }
+
+            // Sleep briefly before checking again
+            std::thread::sleep(Duration::from_millis(100));
+        }
+
+        // Timeout expired, send SIGKILL to remaining containers
+        tracing::warn!("Graceful timeout expired, sending SIGKILL to remaining containers");
+
+        // Emit timeout event
+        let timeout_ms = timeout.as_millis() as u64;
+        let evt = events.pod_timeout(timeout_ms);
+        self.store.append_event(&self.run_id, &evt.to_json()?)?;
+
+        for container in &self.containers {
+            if let Some(pid) = container.pid {
+                tracing::warn!("Sending SIGKILL to container {} (PID {})", container.name, pid);
+
+                // Emit signal forward event
+                let evt = events.signal_forward("SIGKILL", &container.name);
+                self.store.append_event(&self.run_id, &evt.to_json()?)?;
+
+                // Send SIGKILL
+                if let Err(e) = nix::sys::signal::kill(
+                    nix::unistd::Pid::from_raw(pid),
+                    nix::sys::signal::Signal::SIGKILL,
+                ) {
+                    tracing::warn!("Failed to send SIGKILL to PID {}: {}", pid, e);
+                }
+            }
+        }
+
+        // Wait for SIGKILL to take effect
+        for _ in 0..10 {
+            self.reap_exited_processes(&events)?;
+            let all_exited = self.containers.iter().all(|c| c.pid.is_none());
+            if all_exited {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+
+        self.cleanup_after_stop(&events)?;
+
+        Ok(())
+    }
+
+    /// Cleanup after all containers have stopped
+    fn cleanup_after_stop(&mut self, events: &GardenEventBuilder) -> Result<()> {
+        // Cleanup network
+        self.cleanup_network()?;
+
+        // Emit pod exit
+        let evt = events.pod_exit("Stopped");
+        self.store.append_event(&self.run_id, &evt.to_json()?)?;
+
+        let end_ts = Utc::now().to_rfc3339();
+        self.store
+            .update_run_status(&self.run_id, RunStatus::Exited(0), Some(&end_ts))?;
 
         Ok(())
     }

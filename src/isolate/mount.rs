@@ -89,8 +89,36 @@ fn change_root(rootfs: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Perform chroot to a rootfs directory
+pub fn do_chroot(rootfs: &Path) -> Result<()> {
+    use std::ffi::CString;
+
+    // Change directory to rootfs
+    std::env::set_current_dir(rootfs)
+        .with_context(|| format!("Failed to chdir to {}", rootfs.display()))?;
+
+    // Chroot to rootfs using libc directly
+    let rootfs_c = CString::new(rootfs.to_str().context("Invalid rootfs path")?)
+        .context("Failed to convert rootfs to CString")?;
+
+    unsafe {
+        let ret = nix::libc::chroot(rootfs_c.as_ptr());
+        if ret != 0 {
+            anyhow::bail!("Failed to chroot: {}", std::io::Error::last_os_error());
+        }
+    }
+
+    // Change to root directory after chroot
+    std::env::set_current_dir("/")
+        .context("Failed to chdir to / after chroot")?;
+
+    tracing::debug!("Chrooted to: {}", rootfs.display());
+
+    Ok(())
+}
+
 /// Mount /proc filesystem
-fn mount_proc(target: &str) -> Result<()> {
+pub fn mount_proc(target: &str) -> Result<()> {
     let target_path = Path::new(target);
 
     // Create target directory if it doesn't exist
