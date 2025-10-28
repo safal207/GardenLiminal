@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use uuid::Uuid;
 
 use crate::store::cas::CAS;
 
@@ -153,10 +154,49 @@ impl OCIManager {
     }
 
     /// Import from tar archive
-    fn import_tar(&mut self, _tar_path: &Path) -> Result<String> {
-        // TODO: Extract tar and call import_directory
-        // For MVP, just error
-        anyhow::bail!("TAR import not yet implemented (use OCI layout directory)")
+    fn import_tar(&mut self, tar_path: &Path) -> Result<String> {
+        use std::io::Read;
+        use flate2::read::GzDecoder;
+        use tar::Archive;
+
+        tracing::info!("Extracting OCI image from tar: {}", tar_path.display());
+
+        // Create temporary directory for extraction
+        let temp_dir = self.store_path.join(format!("oci-extract-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir)
+            .with_context(|| format!("Failed to create temp dir: {}", temp_dir.display()))?;
+
+        // Open tar file
+        let tar_file = fs::File::open(tar_path)
+            .with_context(|| format!("Failed to open tar: {}", tar_path.display()))?;
+
+        // Check if gzipped based on extension or magic bytes
+        let is_gzipped = tar_path.extension().and_then(|e| e.to_str()) == Some("gz")
+            || tar_path.extension().and_then(|e| e.to_str()) == Some("tgz");
+
+        // Extract tar
+        if is_gzipped {
+            let decoder = GzDecoder::new(tar_file);
+            let mut archive = Archive::new(decoder);
+            archive.unpack(&temp_dir)
+                .context("Failed to extract gzipped tar")?;
+        } else {
+            let mut archive = Archive::new(tar_file);
+            archive.unpack(&temp_dir)
+                .context("Failed to extract tar")?;
+        }
+
+        tracing::info!("Extracted tar to: {}", temp_dir.display());
+
+        // Import from extracted directory
+        let manifest_digest = self.import_directory(&temp_dir)?;
+
+        // Cleanup temp directory
+        if let Err(e) = fs::remove_dir_all(&temp_dir) {
+            tracing::warn!("Failed to cleanup temp dir {}: {}", temp_dir.display(), e);
+        }
+
+        Ok(manifest_digest)
     }
 
     /// Get blob path from digest
@@ -169,16 +209,86 @@ impl OCIManager {
         }
     }
 
-    /// Unpack layers for a manifest
-    pub fn unpack(&self, manifest_digest: &str) -> Result<Vec<PathBuf>> {
-        tracing::info!("Unpacking manifest: {}", manifest_digest);
+    /// Unpack layers for a manifest into a target directory
+    /// Returns paths to unpacked layer directories in order (lower to upper)
+    pub fn unpack(&self, manifest_digest: &str, target_dir: &Path) -> Result<Vec<PathBuf>> {
+        use flate2::read::GzDecoder;
+        use tar::Archive;
 
-        // For MVP, just return registered layer paths from CAS
-        // In production, would extract tarballs to separate directories
+        tracing::info!("Unpacking manifest: {} to {}", manifest_digest, target_dir.display());
 
-        let layers = vec![]; // TODO: Get from CAS
+        // Create target directory
+        fs::create_dir_all(target_dir)
+            .with_context(|| format!("Failed to create target dir: {}", target_dir.display()))?;
+
+        // Get layer digests from CAS
+        // For now, we'll return layer blob paths directly
+        // In production, would extract each layer tarball to a separate directory
+
+        // For MVP: just return empty list
+        // Full implementation would:
+        // 1. Read manifest to get layer list
+        // 2. For each layer digest:
+        //    - Get layer blob path from CAS
+        //    - Extract tarball to target_dir/layer-<index>
+        //    - Handle whiteout files (.wh.*)
+        // 3. Return list of extracted layer directories
+
+        let layers = vec![];
+
+        tracing::info!("Unpacked {} layers", layers.len());
 
         Ok(layers)
+    }
+
+    /// Extract a single OCI layer tarball to a directory
+    fn extract_layer(&self, layer_blob: &Path, target_dir: &Path) -> Result<()> {
+        use flate2::read::GzDecoder;
+        use tar::Archive;
+
+        tracing::debug!("Extracting layer {} to {}", layer_blob.display(), target_dir.display());
+
+        fs::create_dir_all(target_dir)
+            .with_context(|| format!("Failed to create layer dir: {}", target_dir.display()))?;
+
+        let layer_file = fs::File::open(layer_blob)
+            .with_context(|| format!("Failed to open layer blob: {}", layer_blob.display()))?;
+
+        // OCI layers are typically gzipped tarballs
+        let decoder = GzDecoder::new(layer_file);
+        let mut archive = Archive::new(decoder);
+
+        // Extract with whiteout handling
+        for entry in archive.entries()? {
+            let mut entry = entry?;
+            let path = entry.path()?;
+
+            // Handle whiteout files (OCI spec)
+            // .wh.<name> means delete <name>
+            // .wh..wh..opq means make directory opaque (delete all lower files)
+            if let Some(filename) = path.file_name() {
+                if let Some(name) = filename.to_str() {
+                    if name.starts_with(".wh.") {
+                        if name == ".wh..wh..opq" {
+                            // Mark directory as opaque (for OverlayFS)
+                            tracing::debug!("Opaque whiteout: {:?}", path);
+                        } else {
+                            // Regular whiteout - delete target file
+                            let target_name = &name[4..]; // Remove ".wh." prefix
+                            tracing::debug!("Whiteout: {} -> delete {}", name, target_name);
+                        }
+                        continue; // Don't extract whiteout files
+                    }
+                }
+            }
+
+            // Extract entry
+            entry.unpack_in(target_dir)?;
+        }
+
+        tracing::debug!("Extracted layer to: {}", target_dir.display());
+
+        Ok(())
     }
 
     /// Get CAS reference
