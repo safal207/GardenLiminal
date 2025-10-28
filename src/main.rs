@@ -2,6 +2,7 @@ mod cli;
 mod seed;
 mod events;
 mod process;
+mod pod;
 mod isolate;
 mod store;
 mod metrics;
