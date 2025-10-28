@@ -1,0 +1,40 @@
+apiVersion: v0
+kind: Seed
+meta:
+  name: demo-busybox
+  id: demo-001
+rootfs:
+  path: ./examples/rootfs-busybox
+entrypoint:
+  cmd: ["/bin/sh", "-c", "echo hello && uname -a && sleep 1 && echo done"]
+  env:
+    - "RUST_LOG=info"
+    - "HOME=/root"
+  cwd: "/"
+limits:
+  cpu:
+    shares: 256
+  memory:
+    max: "128Mi"
+  pids:
+    max: 64
+net:
+  enable: true
+mounts:
+  - type: proc
+    target: /proc
+security:
+  hostname: "seed-demo"
+  drop_caps:
+    - "NET_ADMIN"
+    - "SYS_ADMIN"
+    - "SYS_MODULE"
+  seccomp_profile: "minimal"
+user:
+  uid: 1000
+  gid: 1000
+  map_rootless: true
+logging:
+  mode: "json"
+store:
+  kind: "mem"
