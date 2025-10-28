@@ -1,0 +1,206 @@
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::Duration;
+
+/// Container metrics from cgroups
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContainerMetrics {
+    pub timestamp: String,
+    pub container_name: String,
+
+    /// Memory usage in bytes
+    pub memory_current: Option<u64>,
+
+    /// Memory limit in bytes
+    pub memory_max: Option<u64>,
+
+    /// CPU usage in microseconds
+    pub cpu_usage_usec: Option<u64>,
+
+    /// Number of PIDs
+    pub pids_current: Option<u64>,
+}
+
+/// Metrics collector for a container
+pub struct MetricsCollector {
+    cgroup_path: PathBuf,
+    container_name: String,
+}
+
+impl MetricsCollector {
+    /// Create a new metrics collector for a container
+    pub fn new(garden_id: &str, container_name: &str) -> Self {
+        let cgroup_path = Path::new("/sys/fs/cgroup")
+            .join("garden")
+            .join(garden_id)
+            .join(container_name);
+
+        Self {
+            cgroup_path,
+            container_name: container_name.to_string(),
+        }
+    }
+
+    /// Collect current metrics
+    pub fn collect(&self) -> Result<ContainerMetrics> {
+        let timestamp = chrono::Utc::now().to_rfc3339();
+
+        let memory_current = self.read_memory_current().ok();
+        let memory_max = self.read_memory_max().ok();
+        let cpu_usage_usec = self.read_cpu_usage().ok();
+        let pids_current = self.read_pids_current().ok();
+
+        Ok(ContainerMetrics {
+            timestamp,
+            container_name: self.container_name.clone(),
+            memory_current,
+            memory_max,
+            cpu_usage_usec,
+            pids_current,
+        })
+    }
+
+    /// Read memory.current
+    fn read_memory_current(&self) -> Result<u64> {
+        let path = self.cgroup_path.join("memory.current");
+        let content = fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read {}", path.display()))?;
+
+        content
+            .trim()
+            .parse()
+            .context("Failed to parse memory.current")
+    }
+
+    /// Read memory.max
+    fn read_memory_max(&self) -> Result<u64> {
+        let path = self.cgroup_path.join("memory.max");
+        let content = fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read {}", path.display()))?;
+
+        let trimmed = content.trim();
+
+        // memory.max can be "max" for unlimited
+        if trimmed == "max" {
+            return Ok(u64::MAX);
+        }
+
+        trimmed.parse().context("Failed to parse memory.max")
+    }
+
+    /// Read cpu.stat and extract usage_usec
+    fn read_cpu_usage(&self) -> Result<u64> {
+        let path = self.cgroup_path.join("cpu.stat");
+        let content = fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read {}", path.display()))?;
+
+        // Parse cpu.stat which has format:
+        // usage_usec 123456
+        // user_usec 78901
+        // system_usec 44555
+        for line in content.lines() {
+            if let Some(usage) = line.strip_prefix("usage_usec ") {
+                return usage.trim().parse().context("Failed to parse cpu usage");
+            }
+        }
+
+        anyhow::bail!("usage_usec not found in cpu.stat")
+    }
+
+    /// Read pids.current
+    fn read_pids_current(&self) -> Result<u64> {
+        let path = self.cgroup_path.join("pids.current");
+        let content = fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read {}", path.display()))?;
+
+        content
+            .trim()
+            .parse()
+            .context("Failed to parse pids.current")
+    }
+}
+
+/// Metrics collector thread for periodic collection
+pub struct MetricsCollectorThread {
+    collectors: Vec<MetricsCollector>,
+    interval: Duration,
+    run_id: String,
+    garden_id: String,
+}
+
+impl MetricsCollectorThread {
+    pub fn new(
+        run_id: String,
+        garden_id: String,
+        container_names: Vec<String>,
+        interval_secs: u64,
+    ) -> Self {
+        let collectors = container_names
+            .iter()
+            .map(|name| MetricsCollector::new(&garden_id, name))
+            .collect();
+
+        Self {
+            collectors,
+            interval: Duration::from_secs(interval_secs),
+            run_id,
+            garden_id,
+        }
+    }
+
+    /// Start collecting metrics in a background thread
+    pub fn start<F>(self, mut callback: F) -> thread::JoinHandle<()>
+    where
+        F: FnMut(ContainerMetrics) + Send + 'static,
+    {
+        thread::spawn(move || {
+            loop {
+                for collector in &self.collectors {
+                    match collector.collect() {
+                        Ok(metrics) => {
+                            callback(metrics);
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to collect metrics for {}: {}",
+                                collector.container_name,
+                                e
+                            );
+                        }
+                    }
+                }
+
+                thread::sleep(self.interval);
+            }
+        })
+    }
+}
+
+/// Format metrics as JSON
+pub fn metrics_to_json(metrics: &ContainerMetrics) -> serde_json::Value {
+    serde_json::to_value(metrics).unwrap_or_else(|_| serde_json::json!({}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_metrics_struct() {
+        let metrics = ContainerMetrics {
+            timestamp: "2025-10-28T12:00:00Z".to_string(),
+            container_name: "test".to_string(),
+            memory_current: Some(1024 * 1024),
+            memory_max: Some(128 * 1024 * 1024),
+            cpu_usage_usec: Some(1000000),
+            pids_current: Some(5),
+        };
+
+        let json = metrics_to_json(&metrics);
+        assert!(json.is_object());
+        assert_eq!(json["container_name"], "test");
+    }
+}

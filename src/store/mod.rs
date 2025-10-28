@@ -1,5 +1,7 @@
 pub mod mem;
 pub mod liminal;
+pub mod cas;
+pub mod pacts;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -36,6 +38,12 @@ pub trait Store: Send + Sync {
 
     /// Update run status
     fn update_run_status(&self, run_id: &str, status: RunStatus, end_ts: Option<&str>) -> Result<()>;
+
+    /// Append metrics (Iteration 2)
+    fn append_metrics(&self, _run_id: &str, _container: &str, _metrics: &serde_json::Value) -> Result<()> {
+        // Default implementation: no-op
+        Ok(())
+    }
 }
 
 /// Store kind selector

@@ -4,6 +4,7 @@ mod events;
 mod process;
 mod isolate;
 mod store;
+mod metrics;
 
 use anyhow::Result;
 use tracing_subscriber::{fmt, EnvFilter};

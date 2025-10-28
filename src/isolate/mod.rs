@@ -4,6 +4,8 @@ pub mod idmap;
 pub mod cgroups;
 pub mod caps;
 pub mod seccomp;
+pub mod overlay;
+pub mod net;
 
 use anyhow::Result;
 use crate::seed::Seed;

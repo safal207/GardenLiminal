@@ -1,0 +1,60 @@
+apiVersion: v0
+kind: Garden
+meta:
+  name: echo-pod
+  id: garden-001
+net:
+  preset: "bridge"
+  ip: "10.44.0.10/24"
+  dns:
+    - "1.1.1.1"
+    - "8.8.8.8"
+security:
+  seccomp_profile: "web-api@1"
+  drop_caps:
+    - "NET_ADMIN"
+    - "SYS_ADMIN"
+    - "SYS_MODULE"
+restartPolicy: "OnFailure"
+containers:
+  - name: api
+    rootfs:
+      layers:
+        lower:
+          - "./examples/layers/busybox-lower"
+        upper: "./examples/layers/api/upper"
+        work: "./examples/layers/api/work"
+    entrypoint:
+      cmd:
+        - "/bin/sh"
+        - "-c"
+        - "echo api-start && sleep 10 && echo api-done"
+      env:
+        - "PORT=8080"
+      cwd: "/"
+    limits:
+      cpu:
+        shares: 256
+      memory:
+        max: "128Mi"
+      pids:
+        max: 64
+    mounts:
+      - type: proc
+        target: /proc
+
+  - name: sidecar-logger
+    rootfs:
+      path: "./examples/rootfs-busybox"
+    entrypoint:
+      cmd:
+        - "/bin/sh"
+        - "-c"
+        - "echo logger-start && sleep 5 && echo logger-done"
+    limits:
+      cpu:
+        shares: 64
+      memory:
+        max: "32Mi"
+      pids:
+        max: 32

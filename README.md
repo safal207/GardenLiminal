@@ -1,15 +1,29 @@
-# GardenLiminal Codex - Iteration 1: Sprout + Pulse
+# GardenLiminal Codex
 
 **Codex** is a lightweight process isolation runtime that launches processes in isolated containers using Linux namespaces, cgroups v2, and seccomp. It integrates with Liminal-DB for event persistence and provides structured JSON event logging.
 
+## Project Status
+
+**Current:** Iteration 2 (In Progress) - Garden (Pod + Layers + Network)
+**Completed:** Iteration 1 - Sprout + Pulse (Single Process Isolation)
+
 ## Features
 
+### Iteration 1 - Sprout + Pulse (Complete)
 - **Namespace Isolation**: user, pid, uts, ipc, mnt, net namespaces
 - **Resource Limits**: CPU shares, memory limits, PID limits via cgroups v2
 - **Security**: Capability dropping, seccomp profiles, no_new_privs
 - **Rootless Mode**: UID/GID mapping for unprivileged execution
 - **Event Logging**: Structured JSON events to stdout and persistent storage
 - **Storage Backends**: In-memory store (MVP) and Liminal-DB adapter (stub)
+
+### Iteration 2 - Garden (In Progress)
+- **Pod Concept**: Multiple containers (processes + sidecars) in one Garden
+- **OverlayFS**: Multi-layer rootfs with lower/upper/work directories
+- **Network Isolation**: bridge (gl0) + veth pairs + IP allocation (IPAM)
+- **Security Policies (Pacts)**: Versioned security policies from Store
+- **Metrics Collection**: Periodic cgroups metrics (memory, CPU, PIDs)
+- **Restart Policies**: Never/OnFailure/Always with exponential backoff
 
 ## Architecture
 
@@ -252,12 +266,75 @@ This is an MVP (Iteration 1) with the following limitations:
 
 These will be addressed in future iterations.
 
+## Iteration 2 - Garden (Pod) - In Progress
+
+Garden introduces multi-container pods with shared networking and advanced features.
+
+### Components Implemented
+
+1. **Data Types** (`src/seed.rs`):
+   - `Garden` - Pod manifest with multiple containers
+   - `Container` - Individual container configuration
+   - `ContainerRootfsConfig` - Support for path or OverlayFS layers
+   - `RestartPolicy` - Never/OnFailure/Always
+
+2. **OverlayFS Support** (`src/isolate/overlay.rs`):
+   - Multi-layer lower directories
+   - Upper/work directory management
+   - Automatic mount/unmount
+
+3. **Network Isolation** (`src/isolate/net.rs`):
+   - Bridge creation and management (gl0)
+   - veth pair setup (host <-> container)
+   - IP allocation (simple IPAM 10.44.0.0/24)
+   - DNS configuration
+   - Network namespace management
+
+4. **Content-Addressable Storage** (`src/store/cas.rs`):
+   - Layer indexing by digest
+   - Path resolution for OCI layers
+
+5. **Security Policies** (`src/store/pacts.rs`):
+   - Versioned security policies (Pacts)
+   - Pre-loaded profiles: "minimal", "web-api@1"
+   - Seccomp profile definitions
+   - Capability lists
+
+6. **Metrics Collection** (`src/metrics.rs`):
+   - Periodic cgroups metrics collection
+   - Memory, CPU, PIDs tracking
+   - Per-container and aggregated metrics
+
+7. **Event System** (`src/events.rs`):
+   - Pod-level events: POD_NET_READY, POD_EXIT, POD_HEALTH
+   - Container-level events: CONTAINER_START, CONTAINER_EXIT
+   - Metric events with structured data
+
+### Example: Garden Pod
+
+See `examples/garden-echo.yaml` for a complete pod definition with:
+- Multiple containers (api + sidecar-logger)
+- OverlayFS layers for api container
+- Network configuration (bridge mode, IP, DNS)
+- Security policies (pacts)
+- Resource limits per container
+- Restart policy
+
+### Remaining Work (Iteration 2)
+
+- [ ] Pod supervisor implementation
+- [ ] CLI commands: `gl garden inspect` and `gl garden run`
+- [ ] Container restart logic with backoff
+- [ ] Full network setup in pod execution
+- [ ] Metrics collection thread integration
+- [ ] End-to-end testing
+
 ## Roadmap
 
-- **Iteration 2**: Full seccomp profiles, proper capability dropping
-- **Iteration 3**: Liminal-DB integration, persistent event storage
-- **Iteration 4**: Network isolation with veth pairs, CNI plugins
-- **Iteration 5**: OCI image support, registry integration
+- **Iteration 2 (Current)**: Pod/Garden support, OverlayFS, Network, Metrics (80% complete)
+- **Iteration 3**: Complete pod supervisor, OCI image pull, registry integration
+- **Iteration 4**: Liminal-DB full integration, persistent event/metrics storage
+- **Iteration 5**: CNI plugins, advanced networking, service mesh ready
 
 ## License
 
