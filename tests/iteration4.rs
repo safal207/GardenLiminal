@@ -265,7 +265,8 @@ containers:
   - name: frontend
     rootfs:
       path: /tmp/rootfs
-    command: ["/bin/sh"]
+    entrypoint:
+      cmd: ["/bin/sh"]
     ports: [8080]
 "#;
 
@@ -304,7 +305,8 @@ containers:
   - name: app
     rootfs:
       path: /tmp/rootfs
-    command: ["/bin/sh"]
+    entrypoint:
+      cmd: ["/bin/sh"]
     volumeMounts:
       - name: data
         mountPath: /data

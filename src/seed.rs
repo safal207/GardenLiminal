@@ -530,6 +530,7 @@ pub struct HostPathVolume {
 /// namedVolume (persistent volume managed by gl)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NamedVolume {
+    #[serde(rename = "volumeName")]
     pub name: String,
     #[serde(rename = "sizeLimit")]
     pub size_limit: Option<String>,
