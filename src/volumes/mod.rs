@@ -66,19 +66,9 @@ pub fn attach_volume(
 
             Ok(tmpfs_path)
         }
-        VolumeType::Secret(_secret) => {
-            // Create tmpfs for secret
-            let tmpfs_path = emptydir::create_tmpfs_for_secret(
-                &volume_spec.name,
-                garden_id,
-                container_name,
-            )?;
-
-            // Secret values would be written here
-            // For MVP, just return the path
-            // Full implementation in src/secrets/mod.rs
-
-            Ok(tmpfs_path)
+        VolumeType::Secret(secret) => {
+            // Materialize secret to tmpfs with strict permissions
+            crate::secrets::materialize_secret(secret, garden_id, container_name)
         }
     }
 }
@@ -90,8 +80,11 @@ pub fn detach_volume(
     container_name: &str,
 ) -> Result<()> {
     match &volume_spec.volume_type {
-        VolumeType::EmptyDir(_) | VolumeType::Config(_) | VolumeType::Secret(_) => {
+        VolumeType::EmptyDir(_) | VolumeType::Config(_) => {
             emptydir::cleanup_emptydir(&volume_spec.name, garden_id, container_name)?;
+        }
+        VolumeType::Secret(secret) => {
+            crate::secrets::cleanup_secret(secret, garden_id, container_name)?;
         }
         VolumeType::HostPath(_) => {
             // Nothing to cleanup for hostPath
