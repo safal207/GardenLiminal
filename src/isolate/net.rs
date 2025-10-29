@@ -4,37 +4,77 @@ use std::process::Command;
 
 /// Bridge configuration
 pub const BRIDGE_NAME: &str = "gl0";
-pub const BRIDGE_IP: &str = "10.44.0.1/24";
-pub const DEFAULT_SUBNET: &str = "10.44.0.0/24";
+pub const BRIDGE_IP: &str = "10.44.0.1/16"; // Changed to /16 for larger pool
+pub const DEFAULT_SUBNET: &str = "10.44.0.0/16";
 
-/// Simple IPAM - allocate next available IP in range
+/// IPAM - IP address management with allocation tracking
+/// Pool: 10.44.0.0/16 (10.44.1.0 - 10.44.255.254)
 pub struct IpAllocator {
-    base: [u8; 4],
-    next_host: u8,
+    allocated: std::collections::HashSet<String>,
+    next_subnet: u8, // 10.44.X.0/24
+    next_host: u8,   // 10.44.X.Y
 }
 
 impl IpAllocator {
     pub fn new() -> Self {
         Self {
-            base: [10, 44, 0, 0],
-            next_host: 10, // Start from .10
+            allocated: std::collections::HashSet::new(),
+            next_subnet: 1, // Start from 10.44.1.0
+            next_host: 10,  // Start from .10 within subnet
         }
     }
 
-    /// Allocate next IP in CIDR format
-    pub fn allocate(&mut self) -> Result<String> {
-        if self.next_host >= 254 {
-            anyhow::bail!("IP pool exhausted");
+    /// Allocate next available IP (returns IP without CIDR for simplicity)
+    pub fn allocate(&mut self, pod_id: &str) -> Result<String> {
+        // Try to allocate from current subnet
+        loop {
+            if self.next_subnet >= 255 {
+                anyhow::bail!("IP pool exhausted (all subnets used)");
+            }
+
+            if self.next_host >= 254 {
+                // Move to next subnet
+                self.next_subnet += 1;
+                self.next_host = 10;
+                continue;
+            }
+
+            let ip = format!("10.44.{}.{}", self.next_subnet, self.next_host);
+            self.next_host += 1;
+
+            // Check if already allocated
+            if !self.allocated.contains(&ip) {
+                self.allocated.insert(ip.clone());
+                tracing::debug!("Allocated IP {} to pod {}", ip, pod_id);
+                return Ok(ip);
+            }
         }
+    }
 
-        let ip = format!(
-            "{}.{}.{}.{}/24",
-            self.base[0], self.base[1], self.base[2], self.next_host
-        );
+    /// Release an IP back to the pool
+    pub fn release(&mut self, ip: &str) -> Result<()> {
+        if self.allocated.remove(ip) {
+            tracing::debug!("Released IP {}", ip);
+            Ok(())
+        } else {
+            tracing::warn!("Attempted to release non-allocated IP: {}", ip);
+            Ok(()) // Not an error, just a warning
+        }
+    }
 
-        self.next_host += 1;
+    /// Get count of allocated IPs
+    pub fn allocated_count(&self) -> usize {
+        self.allocated.len()
+    }
 
-        Ok(ip)
+    /// Get list of allocated IPs
+    pub fn allocated_ips(&self) -> Vec<String> {
+        self.allocated.iter().cloned().collect()
+    }
+
+    /// Check if IP is allocated
+    pub fn is_allocated(&self, ip: &str) -> bool {
+        self.allocated.contains(ip)
     }
 }
 
@@ -244,10 +284,16 @@ mod tests {
     fn test_ip_allocator() {
         let mut allocator = IpAllocator::new();
 
-        let ip1 = allocator.allocate().unwrap();
-        assert_eq!(ip1, "10.44.0.10/24");
+        let ip1 = allocator.allocate("pod1").unwrap();
+        assert_eq!(ip1, "10.44.1.10");
 
-        let ip2 = allocator.allocate().unwrap();
-        assert_eq!(ip2, "10.44.0.11/24");
+        let ip2 = allocator.allocate("pod2").unwrap();
+        assert_eq!(ip2, "10.44.1.11");
+
+        // Test release
+        allocator.release(&ip1).unwrap();
+        assert_eq!(allocator.allocated_count(), 1);
+        assert!(!allocator.is_allocated(&ip1));
+        assert!(allocator.is_allocated(&ip2));
     }
 }

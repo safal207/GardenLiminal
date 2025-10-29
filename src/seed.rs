@@ -265,7 +265,13 @@ pub struct Garden {
     #[serde(rename = "restartPolicy")]
     pub restart_policy: String,
 
+    #[serde(default)]
+    pub services: Vec<ServiceSpec>,
+
     pub containers: Vec<Container>,
+
+    #[serde(default)]
+    pub volumes: Vec<VolumeSpec>,
 
     #[serde(default)]
     pub logging: LoggingConfig,
@@ -295,6 +301,13 @@ pub struct Container {
 
     #[serde(default)]
     pub user: UserConfig,
+
+    #[serde(default)]
+    pub ports: Vec<u16>,
+
+    #[serde(default)]
+    #[serde(rename = "volumeMounts")]
+    pub volume_mounts: Vec<VolumeMount>,
 }
 
 /// Rootfs configuration for a container (path OR layers)
@@ -452,6 +465,104 @@ impl Garden {
     pub fn get_restart_policy(&self) -> Result<RestartPolicy> {
         RestartPolicy::from_str(&self.restart_policy)
     }
+}
+
+// ============================================================================
+// Iteration 4: Services, Volumes, Secrets
+// ============================================================================
+
+/// Service definition for service discovery and DNS
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServiceSpec {
+    pub name: String,
+    pub port: u16,
+    #[serde(rename = "targetContainer")]
+    pub target_container: String,
+    #[serde(default = "default_protocol")]
+    pub protocol: String,
+}
+
+fn default_protocol() -> String {
+    "TCP".to_string()
+}
+
+/// Volume definition
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VolumeSpec {
+    pub name: String,
+    #[serde(flatten)]
+    pub volume_type: VolumeType,
+}
+
+/// Volume types (emptyDir, hostPath, namedVolume, config, secret)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum VolumeType {
+    EmptyDir(EmptyDirVolume),
+    HostPath(HostPathVolume),
+    NamedVolume(NamedVolume),
+    Config(ConfigVolume),
+    Secret(SecretVolume),
+}
+
+/// emptyDir volume (tmpfs or disk)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmptyDirVolume {
+    #[serde(default = "default_empty_dir_medium")]
+    pub medium: String, // "disk" or "tmpfs"
+    #[serde(rename = "sizeLimit")]
+    pub size_limit: Option<String>, // e.g., "256Mi"
+}
+
+fn default_empty_dir_medium() -> String {
+    "disk".to_string()
+}
+
+/// hostPath volume (bind mount from host)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HostPathVolume {
+    pub path: PathBuf,
+    #[serde(default)]
+    #[serde(rename = "readOnly")]
+    pub read_only: bool,
+}
+
+/// namedVolume (persistent volume managed by gl)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NamedVolume {
+    pub name: String,
+    #[serde(rename = "sizeLimit")]
+    pub size_limit: Option<String>,
+}
+
+/// config volume (in-memory config files)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigVolume {
+    pub items: Vec<ConfigItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigItem {
+    pub path: String,
+    pub content: String,
+}
+
+/// secret volume (references secret from store)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecretVolume {
+    #[serde(rename = "ref")]
+    pub secret_ref: String, // "name@version" format
+}
+
+/// Volume mount in container
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VolumeMount {
+    pub name: String,
+    #[serde(rename = "mountPath")]
+    pub mount_path: String,
+    #[serde(default)]
+    #[serde(rename = "readOnly")]
+    pub read_only: bool,
 }
 
 #[cfg(test)]

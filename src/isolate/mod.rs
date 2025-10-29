@@ -6,6 +6,7 @@ pub mod caps;
 pub mod seccomp;
 pub mod overlay;
 pub mod net;
+pub mod dns;
 
 use anyhow::Result;
 use crate::seed::Seed;

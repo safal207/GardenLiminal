@@ -196,10 +196,12 @@ impl PodSupervisor {
 
         // Allocate or use specified IP
         let ip = if let Some(ref ip) = self.garden.net.ip {
-            ip.clone()
+            // User specified IP (strip CIDR if present)
+            ip.split('/').next().unwrap_or(ip).to_string()
         } else {
+            // Allocate from IPAM
             let mut allocator = net::IpAllocator::new();
-            allocator.allocate()?
+            allocator.allocate(&self.garden.meta.id)?
         };
 
         self.pod_ip = Some(ip.clone());
