@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use std::fs;
 use std::process::Command;
+use serde::{Deserialize, Serialize};
 
 /// Bridge configuration
 pub const BRIDGE_NAME: &str = "gl0";
@@ -296,4 +297,62 @@ mod tests {
         assert!(!allocator.is_allocated(&ip1));
         assert!(allocator.is_allocated(&ip2));
     }
+}
+
+// ============================================================================
+// CLI Status Helpers
+// ============================================================================
+
+/// Bridge information for status reporting
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BridgeInfo {
+    pub name: String,
+    pub ip: String,
+    pub prefix_len: u8,
+}
+
+/// IPAM statistics for status reporting
+#[derive(Debug, Serialize, Deserialize)]
+pub struct IpamStats {
+    pub pool_cidr: String,
+    pub allocated_count: usize,
+    pub available_count: usize,
+}
+
+/// Get bridge information for CLI status
+pub fn ensure_garden_bridge() -> Result<BridgeInfo> {
+    // Ensure bridge exists
+    ensure_bridge()?;
+
+    // Parse BRIDGE_IP to extract IP and prefix
+    let parts: Vec<&str> = BRIDGE_IP.split('/').collect();
+    let ip = parts[0].to_string();
+    let prefix_len = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(16);
+
+    Ok(BridgeInfo {
+        name: BRIDGE_NAME.to_string(),
+        ip,
+        prefix_len,
+    })
+}
+
+/// Get IPAM statistics for CLI status
+/// Note: This returns theoretical stats since we don't have global state
+pub fn get_ipam_stats() -> Result<IpamStats> {
+    // For CLI, return theoretical pool stats
+    // In production, would query actual allocator state
+    let pool_cidr = DEFAULT_SUBNET.to_string();
+
+    // Calculate theoretical available IPs
+    // 10.44.0.0/16 = 65536 IPs
+    // - 256 for 10.44.0.x (reserved)
+    // - 1 for broadcast per subnet
+    // ≈ 65000 usable
+    let available_count = 65000;
+
+    Ok(IpamStats {
+        pool_cidr,
+        allocated_count: 0, // Would need global state to track
+        available_count,
+    })
 }

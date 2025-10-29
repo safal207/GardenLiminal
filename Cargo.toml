@@ -6,6 +6,10 @@ authors = ["GardenLiminal Contributors"]
 description = "Codex - Process isolation runtime with Liminal-DB integration"
 license = "MIT"
 
+[lib]
+name = "gl"
+path = "src/lib.rs"
+
 [[bin]]
 name = "gl"
 path = "src/main.rs"

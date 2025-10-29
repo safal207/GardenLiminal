@@ -49,6 +49,21 @@ enum Commands {
         #[command(subcommand)]
         command: ImageCommands,
     },
+    /// Volume commands
+    Volume {
+        #[command(subcommand)]
+        command: VolumeCommands,
+    },
+    /// Secret commands
+    Secret {
+        #[command(subcommand)]
+        command: SecretCommands,
+    },
+    /// Network commands
+    Net {
+        #[command(subcommand)]
+        command: NetCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -73,6 +88,12 @@ enum GardenCommands {
         #[arg(long, default_value = "2")]
         metrics_interval: u64,
     },
+    /// Show pod metrics snapshot
+    Stats {
+        /// Path to garden.yaml file
+        #[arg(short, long)]
+        file: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -94,6 +115,70 @@ enum ImageCommands {
     },
 }
 
+#[derive(Subcommand)]
+enum VolumeCommands {
+    /// Create a named volume
+    Create {
+        /// Volume name
+        name: String,
+
+        /// Size limit (e.g., "10Gi")
+        #[arg(long)]
+        size: Option<String>,
+    },
+    /// List all named volumes
+    #[command(name = "ls")]
+    List,
+    /// Remove a named volume
+    #[command(name = "rm")]
+    Remove {
+        /// Volume name
+        name: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum SecretCommands {
+    /// Create a secret from literal value
+    Create {
+        /// Secret name
+        name: String,
+
+        /// Key-value pair (key=value)
+        #[arg(long, value_name = "KEY=VALUE")]
+        from_literal: String,
+
+        /// Secret version (default: "1")
+        #[arg(long, default_value = "1")]
+        version: String,
+    },
+    /// Get secret metadata
+    Get {
+        /// Secret name
+        name: String,
+
+        /// Secret version
+        #[arg(long, default_value = "1")]
+        version: String,
+    },
+    /// Remove a secret
+    #[command(name = "rm")]
+    Remove {
+        /// Secret name
+        name: String,
+
+        /// Secret version
+        #[arg(long, default_value = "1")]
+        version: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum NetCommands {
+    /// Show network status
+    Status,
+}
+
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
 
@@ -108,10 +193,26 @@ pub fn run() -> Result<()> {
                 store,
                 metrics_interval,
             } => cmd_garden_run(file, store, metrics_interval),
+            GardenCommands::Stats { file } => cmd_garden_stats(file),
         },
         Commands::Image { command } => match command {
             ImageCommands::Import { source, store_path } => cmd_image_import(source, store_path),
             ImageCommands::List { store_path } => cmd_image_list(store_path),
+        },
+        Commands::Volume { command } => match command {
+            VolumeCommands::Create { name, size } => cmd_volume_create(name, size),
+            VolumeCommands::List => cmd_volume_list(),
+            VolumeCommands::Remove { name } => cmd_volume_remove(name),
+        },
+        Commands::Secret { command } => match command {
+            SecretCommands::Create { name, from_literal, version } => {
+                cmd_secret_create(name, from_literal, version)
+            }
+            SecretCommands::Get { name, version } => cmd_secret_get(name, version),
+            SecretCommands::Remove { name, version } => cmd_secret_remove(name, version),
+        },
+        Commands::Net { command } => match command {
+            NetCommands::Status => cmd_net_status(),
         },
     }
 }
@@ -265,6 +366,244 @@ fn cmd_image_list(store_path: PathBuf) -> Result<()> {
     if let Ok(entries) = std::fs::read_dir(&store_path) {
         for entry in entries.flatten() {
             println!("  - {}", entry.file_name().to_string_lossy());
+        }
+    }
+
+    Ok(())
+}
+
+// ============================================================================
+// Volume Commands
+// ============================================================================
+
+fn cmd_volume_create(name: String, size: Option<String>) -> Result<()> {
+    use crate::volumes::named;
+
+    tracing::info!("Creating named volume: {}", name);
+
+    named::ensure_named_volume(&name, size.as_deref())?;
+
+    println!("✓ Created named volume: {}", name);
+    if let Some(s) = size {
+        println!("  Size limit: {}", s);
+    }
+    println!("\nTo use this volume in a Garden, add to volumes:");
+    println!("  volumes:");
+    println!("    - name: {}", name);
+    println!("      namedVolume:");
+    println!("        volumeName: {}", name);
+
+    Ok(())
+}
+
+fn cmd_volume_list() -> Result<()> {
+    use crate::volumes::named;
+
+    tracing::info!("Listing named volumes");
+
+    let volumes = named::list_named_volumes()?;
+
+    if volumes.is_empty() {
+        println!("No named volumes found.");
+        println!("\nCreate a volume with: gl volume create <name>");
+        return Ok(());
+    }
+
+    println!("Named Volumes:");
+    println!();
+    for vol in volumes {
+        println!("  - {}", vol);
+    }
+
+    Ok(())
+}
+
+fn cmd_volume_remove(name: String) -> Result<()> {
+    use crate::volumes::named;
+
+    tracing::info!("Removing named volume: {}", name);
+
+    named::delete_named_volume(&name)?;
+
+    println!("✓ Removed named volume: {}", name);
+
+    Ok(())
+}
+
+// ============================================================================
+// Secret Commands
+// ============================================================================
+
+fn cmd_secret_create(name: String, from_literal: String, version: String) -> Result<()> {
+    use crate::secrets::keystore;
+
+    tracing::info!("Creating secret: {}@{}", name, version);
+
+    // Parse key=value format
+    let parts: Vec<&str> = from_literal.splitn(2, '=').collect();
+    if parts.len() != 2 {
+        anyhow::bail!("Invalid literal format. Expected: key=value");
+    }
+
+    let key = parts[0];
+    let value = parts[1];
+
+    keystore::create_secret_from_literal(&name, &version, vec![(key, value)])?;
+
+    println!("✓ Created secret: {}@{}", name, version);
+    println!("  Key: {}", key);
+    println!("\nTo use this secret in a Garden, add to volumes:");
+    println!("  volumes:");
+    println!("    - name: {}-vol", name);
+    println!("      secret:");
+    println!("        secretRef: {}@{}", name, version);
+
+    Ok(())
+}
+
+fn cmd_secret_get(name: String, version: String) -> Result<()> {
+    use crate::secrets::keystore;
+
+    tracing::info!("Getting secret metadata: {}@{}", name, version);
+
+    let secret = keystore::load_secret(&name, &version)?;
+
+    println!("Secret: {}@{}", secret.name, secret.version);
+    println!("Keys:");
+    for item in &secret.items {
+        println!("  - {} (value masked)", item.key);
+    }
+
+    Ok(())
+}
+
+fn cmd_secret_remove(name: String, version: String) -> Result<()> {
+    use crate::secrets::keystore;
+
+    tracing::info!("Removing secret: {}@{}", name, version);
+
+    keystore::delete_secret(&name, &version)?;
+
+    println!("✓ Removed secret: {}@{}", name, version);
+
+    Ok(())
+}
+
+// ============================================================================
+// Network Commands
+// ============================================================================
+
+fn cmd_net_status() -> Result<()> {
+    use crate::isolate::net;
+    use crate::isolate::dns;
+
+    tracing::info!("Checking network status");
+
+    println!("GardenLiminal Network Status");
+    println!();
+
+    // Bridge status
+    println!("Bridge:");
+    match net::ensure_garden_bridge() {
+        Ok(info) => {
+            println!("  Name: {}", info.name);
+            println!("  IP: {}/{}", info.ip, info.prefix_len);
+            println!("  Status: ✓ Active");
+        }
+        Err(e) => {
+            println!("  Status: ✗ Error: {}", e);
+        }
+    }
+
+    println!();
+
+    // IPAM status
+    println!("IPAM:");
+    match net::get_ipam_stats() {
+        Ok(stats) => {
+            println!("  Pool: {}", stats.pool_cidr);
+            println!("  Allocated: {}", stats.allocated_count);
+            println!("  Available: {}", stats.available_count);
+        }
+        Err(e) => {
+            println!("  Status: ✗ Error: {}", e);
+        }
+    }
+
+    println!();
+
+    // DNS status
+    println!("DNS:");
+    match dns::get_dns_status() {
+        Ok(status) => {
+            println!("  Server: {}", status.listen_addr);
+            println!("  Zone: {}", status.zone);
+            println!("  Records: {}", status.record_count);
+            println!("  Status: ✓ Running");
+        }
+        Err(e) => {
+            println!("  Status: ✗ Error: {}", e);
+        }
+    }
+
+    Ok(())
+}
+
+// ============================================================================
+// Garden Stats Command
+// ============================================================================
+
+fn cmd_garden_stats(file: PathBuf) -> Result<()> {
+    use crate::metrics::MetricsCollector;
+
+    tracing::info!("Collecting metrics for garden: {}", file.display());
+
+    let garden = Garden::from_file(&file)?;
+    garden.validate()?;
+
+    let garden_id = &garden.meta.name;
+
+    println!("Pod Metrics: {}", garden_id);
+    println!();
+
+    // Collect metrics for each container
+    for container in &garden.containers {
+        let collector = MetricsCollector::new(garden_id, &container.name);
+
+        match collector.collect() {
+            Ok(metrics) => {
+                println!("Container: {}", metrics.container_name);
+                println!("  Timestamp: {}", metrics.timestamp);
+
+                if let Some(mem) = metrics.memory_current {
+                    let mb = mem as f64 / 1024.0 / 1024.0;
+                    println!("  Memory: {:.2} MiB", mb);
+                }
+
+                if let Some(max) = metrics.memory_max {
+                    if max != u64::MAX {
+                        let mb = max as f64 / 1024.0 / 1024.0;
+                        println!("  Memory Limit: {:.2} MiB", mb);
+                    } else {
+                        println!("  Memory Limit: unlimited");
+                    }
+                }
+
+                if let Some(cpu) = metrics.cpu_usage_usec {
+                    let secs = cpu as f64 / 1_000_000.0;
+                    println!("  CPU Usage: {:.2} sec", secs);
+                }
+
+                if let Some(pids) = metrics.pids_current {
+                    println!("  PIDs: {}", pids);
+                }
+
+                println!();
+            }
+            Err(e) => {
+                println!("Container: {} - Error: {}", container.name, e);
+                println!();
+            }
         }
     }
 

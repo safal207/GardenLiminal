@@ -1,0 +1,96 @@
+# Example Garden manifest demonstrating service discovery
+# Iteration 4 - Weaver: Services, DNS, and container networking
+apiVersion: v1
+kind: Garden
+meta:
+  name: web-app
+  id: svc-001
+
+net:
+  preset: bridge
+  ip: "10.44.1.20/16"
+  dns:
+    - "10.44.0.1"  # GardenLiminal DNS server
+    - "1.1.1.1"
+
+# Service definitions for DNS discovery
+services:
+  - name: api
+    port: 8080
+    targetContainer: backend
+    protocol: tcp
+
+  - name: frontend
+    port: 3000
+    targetContainer: web
+    protocol: tcp
+
+containers:
+  # Backend API server
+  - name: backend
+    rootfs:
+      path: ./examples/rootfs-busybox
+    entrypoint:
+      cmd:
+        - /bin/sh
+        - -c
+        - |
+          echo "Backend API starting on port 8080..."
+          # Simulated API server
+          while true; do
+            echo "[$(date)] Backend API is running"
+            sleep 5
+          done
+      env:
+        - "PORT=8080"
+        - "SERVICE_NAME=api"
+    ports:
+      - 8080
+    limits:
+      memory:
+        max: "256Mi"
+      cpu:
+        shares: 512
+
+  # Frontend web server
+  - name: web
+    rootfs:
+      path: ./examples/rootfs-busybox
+    entrypoint:
+      cmd:
+        - /bin/sh
+        - -c
+        - |
+          echo "Frontend starting on port 3000..."
+          echo "Backend API available at: api.web-app.garden:8080"
+
+          # Demonstrate DNS resolution
+          echo "Resolving backend service..."
+          # nslookup api.web-app.garden || echo "DNS lookup failed"
+
+          while true; do
+            echo "[$(date)] Frontend is running"
+            echo "Would connect to: api.web-app.garden:8080"
+            sleep 5
+          done
+      env:
+        - "PORT=3000"
+        - "BACKEND_URL=http://api.web-app.garden:8080"
+    ports:
+      - 3000
+    limits:
+      memory:
+        max: "128Mi"
+      cpu:
+        shares: 256
+
+# Service Discovery:
+#   - Service "api" accessible at: api.web-app.garden:8080
+#   - Service "frontend" accessible at: frontend.web-app.garden:3000
+#   - DNS format: <service-name>.<pod-name>.garden
+#
+# To test:
+#   1. Run pod: gl garden run -f examples/garden-services.yaml
+#   2. Check DNS: gl net status
+#   3. Verify services are registered in DNS server
+#   4. Containers can communicate using service names

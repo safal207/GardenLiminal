@@ -1,0 +1,64 @@
+# Example Garden manifest demonstrating volume management
+# Iteration 4 - Weaver: Volume types (emptyDir, namedVolume, hostPath)
+apiVersion: v1
+kind: Garden
+meta:
+  name: volume-demo
+  id: vol-001
+
+net:
+  preset: bridge
+
+volumes:
+  # Disk-backed emptyDir - survives container restarts within pod lifecycle
+  - name: data
+    emptyDir:
+      medium: disk
+
+  # Memory-backed emptyDir (tmpfs) - fast but volatile
+  - name: cache
+    emptyDir:
+      medium: tmpfs
+      sizeLimit: "512Mi"
+
+  # Named volume - persists across pod restarts
+  - name: persistent-data
+    namedVolume:
+      volumeName: my-app-data
+      sizeLimit: "10Gi"
+
+  # Host path - bind mount from host
+  - name: host-config
+    hostPath:
+      path: /etc/app-config
+      readOnly: true
+
+containers:
+  - name: app
+    rootfs:
+      path: ./examples/rootfs-busybox
+    entrypoint:
+      cmd:
+        - /bin/sh
+        - -c
+        - |
+          echo "Writing to data volume..."
+          echo "Hello from app" > /data/app.log
+          echo "Caching temp data..."
+          echo "Temporary data" > /cache/temp.txt
+          echo "Reading host config..."
+          cat /host-config/app.conf || echo "No config found"
+          sleep 60
+    volumeMounts:
+      - name: data
+        mountPath: /data
+      - name: cache
+        mountPath: /cache
+      - name: persistent-data
+        mountPath: /persistent
+      - name: host-config
+        mountPath: /host-config
+        readOnly: true
+    limits:
+      memory:
+        max: "256Mi"

@@ -92,7 +92,7 @@ pub fn cleanup_secret(
 }
 
 /// Parse secret reference "name@version"
-fn parse_secret_ref(secret_ref: &str) -> Result<(String, String)> {
+pub fn parse_secret_ref(secret_ref: &str) -> Result<(String, String)> {
     let parts: Vec<&str> = secret_ref.split('@').collect();
 
     if parts.len() != 2 {

@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::net::{Ipv4Addr, UdpSocket};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
+use serde::{Deserialize, Serialize};
 
 /// DNS server for service discovery
 /// Listens on gl0 bridge (10.44.0.1:53) and resolves service names
@@ -199,4 +200,28 @@ mod tests {
         let fqdn = format!("{}.{}.garden", "echo", "echo-pod");
         assert_eq!(fqdn, "echo.echo-pod.garden");
     }
+}
+
+// ============================================================================
+// CLI Status Helpers
+// ============================================================================
+
+/// DNS server status for CLI reporting
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DnsStatus {
+    pub listen_addr: String,
+    pub zone: String,
+    pub record_count: usize,
+}
+
+/// Get DNS status for CLI
+/// Note: Returns default config since we don't have global DNS server state
+pub fn get_dns_status() -> Result<DnsStatus> {
+    // For CLI, return default configuration
+    // In production, would query actual DNS server state
+    Ok(DnsStatus {
+        listen_addr: "10.44.0.1:53".to_string(),
+        zone: "garden".to_string(),
+        record_count: 0, // Would need global state to track
+    })
 }
