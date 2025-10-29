@@ -6,6 +6,7 @@ mod pod;
 mod isolate;
 mod store;
 mod metrics;
+mod volumes;
 
 use anyhow::Result;
 use tracing_subscriber::{fmt, EnvFilter};
