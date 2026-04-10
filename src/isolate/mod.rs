@@ -47,16 +47,16 @@ impl<'a> IsolationConfig<'a> {
             idmap::apply_uid_gid_mapping(&self.seed.user)?;
         }
 
+        // Set no_new_privs first — required before applying seccomp without CAP_SYS_ADMIN
+        ns::set_no_new_privs()?;
+
         // Drop capabilities
         caps::drop_capabilities(&self.seed.security.drop_caps)?;
 
-        // Apply seccomp
+        // Apply seccomp (must come after no_new_privs)
         if let Some(ref profile) = self.seed.security.seccomp_profile {
             seccomp::apply_seccomp(profile)?;
         }
-
-        // Set no_new_privs
-        ns::set_no_new_privs()?;
 
         Ok(())
     }
