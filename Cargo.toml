@@ -47,5 +47,8 @@ flate2 = "1.0"
 # LiminalDB WebSocket integration
 tungstenite = { version = "0.24", features = ["native-tls"] }
 
+# Seccomp BPF filter generation
+seccompiler = "0.4"
+
 [dev-dependencies]
 tempfile = "3.10"
