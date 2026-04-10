@@ -1,88 +1,156 @@
 use super::{RunStatus, SeedRecord, Store};
-use anyhow::Result;
+use anyhow::{Context, Result};
+use serde_json::{json, Value};
+use std::net::TcpStream;
+use std::sync::Mutex;
+use tungstenite::{connect, stream::MaybeTlsStream, Message, WebSocket};
 
-/// Liminal-DB store adapter (stub implementation)
+/// Default LiminalDB WebSocket address
+const DEFAULT_LIMINAL_URL: &str = "ws://127.0.0.1:9000";
+
+/// LiminalDB store adapter
 ///
-/// TODO: This is a placeholder for future Liminal-DB integration.
-/// When ready, this will connect to the Liminal-DB and use its API
-/// to persist seeds, runs, and events.
-///
-/// For now, it mirrors events to stdout like the memory store.
-#[derive(Debug)]
+/// Connects to a running LiminalDB instance via WebSocket and sends
+/// container lifecycle events as impulses using the LiminalDB protocol:
+///   {"command": "impulse", "data": { ...event... }}
 pub struct LiminalStore {
-    // Future: connection pool, client config, etc.
+    /// WebSocket connection (None if offline — falls back to stdout)
+    socket: Mutex<Option<WebSocket<MaybeTlsStream<TcpStream>>>>,
+    /// Target URL
+    url: String,
+}
+
+impl std::fmt::Debug for LiminalStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LiminalStore")
+            .field("url", &self.url)
+            .finish()
+    }
 }
 
 impl LiminalStore {
     pub fn new() -> Result<Self> {
-        tracing::info!("Initializing Liminal-DB store (stub mode)");
-        tracing::warn!("Liminal-DB integration not yet implemented - events will only go to stdout");
+        Self::with_url(DEFAULT_LIMINAL_URL)
+    }
 
-        // TODO: Initialize actual connection to Liminal-DB
-        // For now, we just create a stub
+    pub fn with_url(url: &str) -> Result<Self> {
+        let socket = match connect(url) {
+            Ok((ws, _response)) => {
+                tracing::info!(url = url, "Connected to LiminalDB");
+                Some(ws)
+            }
+            Err(err) => {
+                tracing::warn!(
+                    url = url,
+                    error = %err,
+                    "LiminalDB not reachable — events will fall back to stdout"
+                );
+                None
+            }
+        };
 
-        Ok(Self {})
+        Ok(Self {
+            socket: Mutex::new(socket),
+            url: url.to_string(),
+        })
+    }
+
+    /// Send an impulse to LiminalDB.
+    /// Format: {"command": "impulse", "data": { ...payload... }}
+    fn send_impulse(&self, data: Value) {
+        let msg = json!({
+            "command": "impulse",
+            "data": data
+        });
+
+        let text = match serde_json::to_string(&msg) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to serialize LiminalDB impulse");
+                return;
+            }
+        };
+
+        let mut guard = self.socket.lock().unwrap();
+        if let Some(ws) = guard.as_mut() {
+            if let Err(err) = ws.send(Message::Text(text.clone())) {
+                tracing::warn!(error = %err, "LiminalDB send failed — falling back to stdout");
+                // Drop broken connection so next attempt tries reconnect
+                *guard = None;
+                println!("{}", text);
+            }
+        } else {
+            // Offline mode: try to reconnect once
+            drop(guard);
+            if let Ok((ws, _)) = connect(&self.url) {
+                tracing::info!(url = self.url, "Reconnected to LiminalDB");
+                let mut guard = self.socket.lock().unwrap();
+                *guard = Some(ws);
+                if let Some(ws) = guard.as_mut() {
+                    let _ = ws.send(Message::Text(text.clone()));
+                    return;
+                }
+            }
+            // Still offline — stdout fallback
+            println!("{}", text);
+        }
     }
 }
 
 impl Store for LiminalStore {
     fn upsert_seed(&self, s: SeedRecord) -> Result<()> {
-        tracing::debug!("LiminalStore: upserting seed {} (stub)", s.id);
-
-        // TODO: Call Liminal-DB API to store seed record
-        // Example (pseudo-code):
-        // self.client.put_seed(s)?;
-
-        tracing::info!("Seed {} upserted (stub - not persisted)", s.id);
+        self.send_impulse(json!({
+            "type": "SEED_UPSERT",
+            "seed_id": s.id,
+            "seed_name": s.name,
+        }));
         Ok(())
     }
 
     fn create_run(&self, run_id: &str, seed_id: &str, start_ts: &str) -> Result<()> {
-        tracing::debug!("LiminalStore: creating run {} for seed {} (stub)", run_id, seed_id);
-
-        // TODO: Call Liminal-DB API to create run record
-        // Example (pseudo-code):
-        // self.client.create_run(run_id, seed_id, start_ts)?;
-
-        tracing::info!("Run {} created (stub - not persisted)", run_id);
+        self.send_impulse(json!({
+            "type": "RUN_CREATED",
+            "run_id": run_id,
+            "seed_id": seed_id,
+            "start_ts": start_ts,
+        }));
         Ok(())
     }
 
-    fn append_event(&self, run_id: &str, event: &serde_json::Value) -> Result<()> {
-        tracing::debug!("LiminalStore: appending event to run {} (stub)", run_id);
-
-        // Write to stdout for now
-        println!("{}", serde_json::to_string(event)?);
-
-        // TODO: Call Liminal-DB API to append event
-        // Example (pseudo-code):
-        // self.client.append_event(run_id, event)?;
-
+    fn append_event(&self, run_id: &str, event: &Value) -> Result<()> {
+        self.send_impulse(json!({
+            "type": "EVENT",
+            "run_id": run_id,
+            "event": event,
+        }));
         Ok(())
     }
 
-    fn update_run_status(&self, run_id: &str, status: RunStatus, _end_ts: Option<&str>) -> Result<()> {
-        tracing::debug!("LiminalStore: updating run {} status (stub)", run_id);
+    fn update_run_status(&self, run_id: &str, status: RunStatus, end_ts: Option<&str>) -> Result<()> {
+        let status_str = match &status {
+            RunStatus::Init => "init",
+            RunStatus::Running => "running",
+            RunStatus::Exited(_) => "exited",
+            RunStatus::Failed(_) => "failed",
+        };
 
-        // TODO: Call Liminal-DB API to update run status
-        // Example (pseudo-code):
-        // self.client.update_run_status(run_id, status, end_ts)?;
+        let mut payload = json!({
+            "type": "RUN_STATUS",
+            "run_id": run_id,
+            "status": status_str,
+        });
 
-        match status {
-            RunStatus::Init => {
-                tracing::info!("Run {} status updated to Init (stub - not persisted)", run_id);
-            }
-            RunStatus::Running => {
-                tracing::info!("Run {} status updated to Running (stub - not persisted)", run_id);
-            }
-            RunStatus::Exited(code) => {
-                tracing::info!("Run {} exited with code {} (stub - not persisted)", run_id, code);
-            }
-            RunStatus::Failed(ref err) => {
-                tracing::error!("Run {} failed: {} (stub - not persisted)", run_id, err);
-            }
+        if let Some(ts) = end_ts {
+            payload["end_ts"] = json!(ts);
         }
 
+        match &status {
+            RunStatus::Exited(code) => payload["exit_code"] = json!(code),
+            RunStatus::Failed(err) => payload["error"] = json!(err),
+            _ => {}
+        }
+
+        self.send_impulse(payload);
         Ok(())
     }
 }
@@ -91,4 +159,12 @@ impl Default for LiminalStore {
     fn default() -> Self {
         Self::new().expect("Failed to create LiminalStore")
     }
+}
+
+/// Build a LiminalStore from an optional URL env var.
+/// Falls back to DEFAULT_LIMINAL_URL if not set.
+pub fn liminal_store_from_env() -> Result<LiminalStore> {
+    let url = std::env::var("LIMINAL_URL")
+        .unwrap_or_else(|_| DEFAULT_LIMINAL_URL.to_string());
+    LiminalStore::with_url(&url).context("Failed to initialise LiminalStore")
 }

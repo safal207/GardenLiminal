@@ -44,5 +44,8 @@ lazy_static = "1.4"
 tar = "0.4"
 flate2 = "1.0"
 
+# LiminalDB WebSocket integration
+tungstenite = { version = "0.24", features = ["native-tls"] }
+
 [dev-dependencies]
 tempfile = "3.10"
