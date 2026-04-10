@@ -5,8 +5,8 @@ use std::net::TcpStream;
 use std::sync::Mutex;
 use tungstenite::{connect, stream::MaybeTlsStream, Message, WebSocket};
 
-/// Default LiminalDB WebSocket address
-const DEFAULT_LIMINAL_URL: &str = "ws://127.0.0.1:9000";
+/// Default LiminalDB WebSocket address (liminal-cli default port)
+const DEFAULT_LIMINAL_URL: &str = "ws://127.0.0.1:8787";
 
 /// LiminalDB store adapter
 ///
@@ -58,8 +58,9 @@ impl LiminalStore {
     /// Send an impulse to LiminalDB.
     /// Format: {"command": "impulse", "data": { ...payload... }}
     fn send_impulse(&self, data: Value) {
+        // LiminalDB WebSocket protocol: {"cmd": "impulse", "data": {...}}
         let msg = json!({
-            "command": "impulse",
+            "cmd": "impulse",
             "data": data
         });
 
