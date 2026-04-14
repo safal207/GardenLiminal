@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GardenLiminal - Grant Landing</title>
+  <style>
+    :root {
+      --bg: #f2efe9;
+      --panel: rgba(255, 252, 248, 0.88);
+      --ink: #1c1918;
+      --muted: #5d5854;
+      --line: rgba(28, 25, 24, 0.12);
+      --accent: #2d6c52;
+      --accent-2: #7c3f30;
+      --shadow: 0 18px 60px rgba(28, 25, 24, 0.12);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, rgba(45, 108, 82, 0.16), transparent 30%),
+        radial-gradient(circle at right center, rgba(124, 63, 48, 0.14), transparent 28%),
+        linear-gradient(180deg, #fbf9f6 0%, var(--bg) 100%);
+      line-height: 1.5;
+    }
+    .wrap { width: min(1120px, calc(100% - 32px)); margin: 0 auto; }
+    .hero { padding: 72px 0 36px; }
+    .eyebrow { letter-spacing: 0.18em; text-transform: uppercase; font-size: 12px; color: var(--accent); font-weight: 700; }
+    h1, h2, h3 { font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif; line-height: 1.02; margin: 0; }
+    h1 { font-size: clamp(44px, 8vw, 82px); max-width: 920px; margin-top: 14px; }
+    .lead { max-width: 760px; margin-top: 20px; font-size: clamp(18px, 2.6vw, 24px); color: var(--muted); }
+    .cta-row { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 28px; }
+    .btn, .ghost { display: inline-block; padding: 14px 18px; border-radius: 999px; text-decoration: none; font-weight: 700; }
+    .btn { background: var(--ink); color: #fff; }
+    .ghost { background: rgba(255,255,255,0.56); color: var(--ink); border: 1px solid var(--line); }
+    .grid { display: grid; grid-template-columns: 1.25fr 0.95fr; gap: 22px; margin-top: 38px; }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 28px; padding: 24px; box-shadow: var(--shadow); backdrop-filter: blur(10px); }
+    .card h3 { font-size: 26px; margin-bottom: 14px; }
+    .stat { padding: 14px 0; border-top: 1px solid var(--line); display: grid; grid-template-columns: 132px 1fr; gap: 12px; }
+    .stat:first-of-type { border-top: 0; padding-top: 0; }
+    .stat b { color: var(--accent-2); }
+    .section { padding: 18px 0 54px; }
+    .section h2 { font-size: clamp(30px, 5vw, 52px); margin-bottom: 18px; }
+    .three { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+    .bullet { padding: 22px; background: rgba(255,255,255,0.62); border: 1px solid var(--line); border-radius: 22px; }
+    .bullet p { margin: 10px 0 0; color: var(--muted); }
+    ul.clean { list-style: none; margin: 18px 0 0; padding: 0; display: grid; gap: 12px; }
+    ul.clean li { padding: 14px 16px; border-radius: 16px; background: rgba(255,255,255,0.6); border: 1px solid var(--line); }
+    .links { display: grid; gap: 12px; margin-top: 16px; }
+    .links a { color: var(--ink); text-decoration: none; padding: 14px 16px; border-radius: 16px; background: rgba(255,255,255,0.62); border: 1px solid var(--line); display: block; }
+    .footer { padding: 0 0 64px; color: var(--muted); font-size: 14px; }
+    @media (max-width: 860px) { .grid, .three { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="hero">
+      <div class="eyebrow">Grant Landing</div>
+      <h1>A container runtime that treats lifecycle evidence as first-class output.</h1>
+      <p class="lead">
+        GardenLiminal is the runtime layer of the Liminal Stack: an open Rust runtime
+        for workload isolation with structured lifecycle events and a clear hardening roadmap.
+      </p>
+      <div class="cta-row">
+        <a class="btn" href="./STACK_DEMO.md">Review stack demo</a>
+        <a class="ghost" href="../grants/README.md">Open grant materials</a>
+      </div>
+
+      <div class="grid">
+        <div class="card">
+          <h3>Why this layer matters</h3>
+          <div class="stat"><b>Problem</b><span>Most runtimes focus on execution first and evidence later, leaving the execution boundary hard to inspect.</span></div>
+          <div class="stat"><b>Consequence</b><span>Audit trails get scattered across tools and it becomes harder to explain what actually happened at runtime.</span></div>
+          <div class="stat"><b>Contribution</b><span>GardenLiminal makes runtime lifecycle events part of the architecture rather than an external afterthought.</span></div>
+        </div>
+        <div class="card">
+          <h3>Reviewer proof points</h3>
+          <div class="links">
+            <a href="./SECURITY_STATUS.md">Security status with implemented / partial / planned split</a>
+            <a href="./BENCHMARKS.md">Benchmark scaffold and next evidence path</a>
+            <a href="../grants/NLNET_COMMONS_APPLICATION.md">NLnet application draft</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>The grant case</h2>
+      <div class="three">
+        <div class="bullet">
+          <h3>Open runtime logic</h3>
+          <p>Isolation paths and event logic are visible and reviewable in an open Rust codebase.</p>
+        </div>
+        <div class="bullet">
+          <h3>Execution plus evidence</h3>
+          <p>The runtime is positioned not only as an execution engine, but as an evidence producer.</p>
+        </div>
+        <div class="bullet">
+          <h3>Stack fit</h3>
+          <p>GardenLiminal bridges workload execution and persistent event history through LiminalDB integration.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>What reviewers should remember</h2>
+      <ul class="clean">
+        <li>Trustworthy infrastructure needs a runtime layer that can show what happened at execution time.</li>
+        <li>Open isolation is stronger when it is paired with structured runtime evidence.</li>
+        <li>GardenLiminal exists to make that boundary visible, inspectable, and reusable.</li>
+      </ul>
+    </section>
+
+    <section class="section">
+      <h2>Best next milestone</h2>
+      <p class="lead">
+        The strongest next step is deeper hardening evidence: capability dropping completion,
+        stronger runtime verification, and an external security review.
+      </p>
+    </section>
+
+    <div class="footer">Prepared as grant-oriented landing copy for GardenLiminal.</div>
+  </div>
+</body>
+</html>
