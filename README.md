@@ -1,20 +1,13 @@
-﻿## Reviewer docs
-
-- [Stack demo](docs/STACK_DEMO.md)
-- [Security status](docs/SECURITY_STATUS.md)
-- [Benchmarks](docs/BENCHMARKS.md)
-- [NLnet grant materials](grants/README.md)
-
 # GardenLiminal
 
 > A process isolation runtime where every lifecycle event is a first-class citizen.
 
-GardenLiminal runs processes in isolated containers using Linux namespaces, cgroups v2, and seccomp â€” and emits a structured audit trail for every step it takes. It is designed to work natively with [LiminalDB](https://github.com/safal207/LiminalBD), a biological-inspired event store that remembers the full history of your workloads.
+GardenLiminal runs processes in isolated containers using Linux namespaces, cgroups v2, and seccomp — and emits a structured audit trail for every step it takes. It is designed to work natively with [LiminalDB](https://github.com/safal207/LiminalBD), a biological-inspired event store that remembers the full history of your workloads.
 
 ```
-seed planted â†’ namespaces created â†’ cgroups applied â†’
-capabilities dropped â†’ process started â†’ process exited
-        â†“
+seed planted → namespaces created → cgroups applied →
+capabilities dropped → process started → process exited
+        ↓
   every step flows into LiminalDB as an impulse
 ```
 
@@ -22,7 +15,7 @@ capabilities dropped â†’ process started â†’ process exited
 
 ## Why GardenLiminal?
 
-Most container runtimes treat observability as an afterthought â€” you bolt on Falco, Sysdig, or auditd separately. GardenLiminal takes the opposite approach: **the audit trail is built into the runtime itself.**
+Most container runtimes treat observability as an afterthought — you bolt on Falco, Sysdig, or auditd separately. GardenLiminal takes the opposite approach: **the audit trail is built into the runtime itself.**
 
 Every isolation step emits a structured JSON event. Those events flow into LiminalDB where they are stored as impulses, queryable via LQL, and replayable as a timeline. You get compliance-grade observability without a separate agent.
 
@@ -43,28 +36,28 @@ GardenLiminal uses a botanical metaphor that maps directly to its architecture:
 | Term | Meaning |
 |---|---|
 | **Seed** | A single-process workload manifest (YAML) |
-| **Garden** | A multi-container pod â€” several Seeds sharing network and volumes |
+| **Garden** | A multi-container pod — several Seeds sharing network and volumes |
 | **Sprout** | A running isolated process |
 | **Pact** | A versioned security policy (`drop_caps`, `seccomp_profile`) |
 | **Impulse** | A lifecycle event sent to LiminalDB |
 
-The name *Liminal* refers to the threshold state â€” the boundary between the host OS and the isolated environment. GardenLiminal lives and operates in that boundary, recording everything that crosses it.
+The name *Liminal* refers to the threshold state — the boundary between the host OS and the isolated environment. GardenLiminal lives and operates in that boundary, recording everything that crosses it.
 
 ---
 
 ## Features
 
-- **Full Linux isolation** â€” user, pid, uts, ipc, mnt, net namespaces
-- **Resource limits** â€” CPU shares, memory, PID limits via cgroups v2
-- **Rootless mode** â€” UID/GID mapping, no root required for process isolation
-- **OverlayFS** â€” multi-layer rootfs for containers
-- **OCI image support** â€” import and unpack OCI image layers
-- **5 volume types** â€” emptyDir (disk/tmpfs), hostPath, namedVolume, config, secret
-- **Secrets management** â€” tmpfs-backed, strict permissions (0400), value masking in logs
-- **Versioned security policies** â€” Pacts with seccomp profiles and capability lists
-- **Service discovery** â€” DNS schema `service-name.pod-name.garden`
-- **Prometheus metrics** â€” HTTP exporter on `127.0.0.1:9464`
-- **LiminalDB integration** â€” every event sent as a WebSocket impulse
+- **Full Linux isolation** — user, pid, uts, ipc, mnt, net namespaces
+- **Resource limits** — CPU shares, memory, PID limits via cgroups v2
+- **Rootless mode** — UID/GID mapping, no root required for process isolation
+- **OverlayFS** — multi-layer rootfs for containers
+- **OCI image support** — import and unpack OCI image layers
+- **5 volume types** — emptyDir (disk/tmpfs), hostPath, namedVolume, config, secret
+- **Secrets management** — tmpfs-backed, strict permissions (0400), value masking in logs
+- **Versioned security policies** — Pacts with seccomp profiles and capability lists
+- **Service discovery** — DNS schema `service-name.pod-name.garden`
+- **Prometheus metrics** — HTTP exporter on `127.0.0.1:9464`
+- **LiminalDB integration** — every event sent as a WebSocket impulse
 
 ---
 
@@ -117,7 +110,7 @@ GardenLiminal connects to [LiminalDB](https://github.com/safal207/LiminalBD) via
 # Start LiminalDB
 liminal-cli
 
-# Run a container â€” events flow into LiminalDB automatically
+# Run a container — events flow into LiminalDB automatically
 LIMINAL_URL=ws://127.0.0.1:8787 \
   sudo -E ./target/release/gl run -f examples/seed-busybox.yaml --store liminal
 
@@ -194,15 +187,15 @@ Every isolation step emits a structured JSON event:
 Full event sequence:
 
 ```
-RUN_CREATED â†’ SEED_LOADED â†’ NS_CREATED â†’ MOUNT_DONE â†’
-CGROUP_APPLIED â†’ IDMAP_APPLIED â†’ CAPS_DROPPED â†’
-SECCOMP_ENABLED â†’ PROCESS_START â†’ PROCESS_EXIT
+RUN_CREATED → SEED_LOADED → NS_CREATED → MOUNT_DONE →
+CGROUP_APPLIED → IDMAP_APPLIED → CAPS_DROPPED →
+SECCOMP_ENABLED → PROCESS_START → PROCESS_EXIT
 ```
 
 For pods (Gardens):
 
 ```
-POD_NET_READY â†’ CONTAINER_START Ã— N â†’ CONTAINER_EXIT Ã— N â†’ POD_EXIT
+POD_NET_READY → CONTAINER_START × N → CONTAINER_EXIT × N → POD_EXIT
 ```
 
 ---
@@ -254,24 +247,24 @@ gl net status
 
 ```
 gl (binary)
-â”œâ”€â”€ CLI (clap)
-â”œâ”€â”€ Seed / Garden Parser (YAML)
-â”œâ”€â”€ Isolation Layer
-â”‚   â”œâ”€â”€ Namespaces (user, pid, uts, ipc, mnt, net)
-â”‚   â”œâ”€â”€ Mounts (OverlayFS, chroot, bind mounts)
-â”‚   â”œâ”€â”€ UID/GID Mapping (rootless)
-â”‚   â”œâ”€â”€ Cgroups v2 (cpu, memory, pids)
-â”‚   â”œâ”€â”€ Capabilities (drop)
-â”‚   â”œâ”€â”€ Seccomp profiles
-â”‚   â””â”€â”€ Network (bridge gl0, veth, IPAM 10.44.0.0/16)
-â”œâ”€â”€ Pod Supervisor (lifecycle, restart policies, crash loop detection)
-â”œâ”€â”€ Volume Manager (emptyDir, hostPath, namedVolume, config, secret)
-â”œâ”€â”€ Secrets (tmpfs, 0400 permissions, version support)
-â”œâ”€â”€ Metrics (Prometheus HTTP on :9464)
-â”œâ”€â”€ Event System (structured JSON, all lifecycle steps)
-â””â”€â”€ Store
-    â”œâ”€â”€ Memory (in-process, events to stdout)
-    â””â”€â”€ LiminalDB (WebSocket impulses â†’ persistent, queryable)
+├── CLI (clap)
+├── Seed / Garden Parser (YAML)
+├── Isolation Layer
+│   ├── Namespaces (user, pid, uts, ipc, mnt, net)
+│   ├── Mounts (OverlayFS, chroot, bind mounts)
+│   ├── UID/GID Mapping (rootless)
+│   ├── Cgroups v2 (cpu, memory, pids)
+│   ├── Capabilities (drop)
+│   ├── Seccomp profiles
+│   └── Network (bridge gl0, veth, IPAM 10.44.0.0/16)
+├── Pod Supervisor (lifecycle, restart policies, crash loop detection)
+├── Volume Manager (emptyDir, hostPath, namedVolume, config, secret)
+├── Secrets (tmpfs, 0400 permissions, version support)
+├── Metrics (Prometheus HTTP on :9464)
+├── Event System (structured JSON, all lifecycle steps)
+└── Store
+    ├── Memory (in-process, events to stdout)
+    └── LiminalDB (WebSocket impulses → persistent, queryable)
 ```
 
 ---
@@ -280,31 +273,31 @@ gl (binary)
 
 ```
 src/
-â”œâ”€â”€ main.rs          # Entry point
-â”œâ”€â”€ cli.rs           # CLI interface
-â”œâ”€â”€ seed.rs          # Seed & Garden config parser
-â”œâ”€â”€ events.rs        # Event model + builders
-â”œâ”€â”€ process.rs       # Process runner (fork/exec/wait/reap)
-â”œâ”€â”€ pod.rs           # Pod supervisor
-â”œâ”€â”€ metrics.rs       # Prometheus metrics
-â”œâ”€â”€ isolate/         # Isolation primitives
-â”‚   â”œâ”€â”€ ns.rs        # Namespaces
-â”‚   â”œâ”€â”€ mount.rs     # Mounts
-â”‚   â”œâ”€â”€ overlay.rs   # OverlayFS
-â”‚   â”œâ”€â”€ idmap.rs     # UID/GID mapping
-â”‚   â”œâ”€â”€ cgroups.rs   # Cgroups v2
-â”‚   â”œâ”€â”€ caps.rs      # Capabilities
-â”‚   â”œâ”€â”€ seccomp.rs   # Seccomp
-â”‚   â”œâ”€â”€ net.rs       # Network (bridge, veth, IPAM)
-â”‚   â””â”€â”€ dns.rs       # Service discovery
-â”œâ”€â”€ store/           # Storage backends
-â”‚   â”œâ”€â”€ mem.rs       # In-memory store
-â”‚   â”œâ”€â”€ liminal.rs   # LiminalDB WebSocket adapter
-â”‚   â”œâ”€â”€ cas.rs       # Content-addressable storage (OCI)
-â”‚   â”œâ”€â”€ pacts.rs     # Security policies
-â”‚   â””â”€â”€ oci.rs       # OCI image parsing
-â”œâ”€â”€ volumes/         # Volume management
-â””â”€â”€ secrets/         # Secrets management
+├── main.rs          # Entry point
+├── cli.rs           # CLI interface
+├── seed.rs          # Seed & Garden config parser
+├── events.rs        # Event model + builders
+├── process.rs       # Process runner (fork/exec/wait/reap)
+├── pod.rs           # Pod supervisor
+├── metrics.rs       # Prometheus metrics
+├── isolate/         # Isolation primitives
+│   ├── ns.rs        # Namespaces
+│   ├── mount.rs     # Mounts
+│   ├── overlay.rs   # OverlayFS
+│   ├── idmap.rs     # UID/GID mapping
+│   ├── cgroups.rs   # Cgroups v2
+│   ├── caps.rs      # Capabilities
+│   ├── seccomp.rs   # Seccomp
+│   ├── net.rs       # Network (bridge, veth, IPAM)
+│   └── dns.rs       # Service discovery
+├── store/           # Storage backends
+│   ├── mem.rs       # In-memory store
+│   ├── liminal.rs   # LiminalDB WebSocket adapter
+│   ├── cas.rs       # Content-addressable storage (OCI)
+│   ├── pacts.rs     # Security policies
+│   └── oci.rs       # OCI image parsing
+├── volumes/         # Volume management
+└── secrets/         # Secrets management
 ```
 
 ---
@@ -352,6 +345,5 @@ MIT
 
 GardenLiminal is part of a two-project ecosystem:
 
-- **GardenLiminal** â€” the runtime. Plants seeds, grows gardens, records every moment.
-- **[LiminalDB](https://github.com/safal207/LiminalBD)** â€” the memory. Stores impulses, replays timelines, queries history.
-
+- **GardenLiminal** — the runtime. Plants seeds, grows gardens, records every moment.
+- **[LiminalDB](https://github.com/safal207/LiminalBD)** — the memory. Stores impulses, replays timelines, queries history.
