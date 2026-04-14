@@ -1,33 +1,26 @@
-# GardenLiminal Grant Readiness
+# Grant Materials for GardenLiminal
 
-## Positioning
+This directory contains NLnet-facing grant material for `GardenLiminal` as
+part of the broader Liminal Stack submission to `NGI Zero Commons Fund`.
 
-GardenLiminal is the runtime layer of the Liminal Stack: a Rust container
-runtime with audit-native isolation, lifecycle event persistence, and tight
-integration with LiminalDB.
+## Files
 
-## Why it fits NGI Zero Commons Fund
+- `NLNET_COMMONS_APPLICATION.md` - stack-wide application draft shared across
+  `DAO_lim`, `LiminalBD`, and `GardenLiminal`
+- `NLNET_COMMONS_REPO_BRIEF.md` - GardenLiminal-specific positioning, scope,
+  and submission notes
 
-- infrastructure component, not a single end-user product
-- security and auditability are built into the runtime path
-- addresses a clear gap in trustworthy AI workload execution
-- integrates cleanly with the storage and routing layers of the stack
+## Current call
 
-## Grant-facing strengths visible in the repository
+`NGI Zero Entrust` is closed. The active funding track is
+`NGI Zero Commons Fund`, with the next deadline set to `June 1, 2026, 12:00
+CEST`.
 
-- strong technical README with isolation and audit model
-- existing [GRANT_PITCH.md](../GRANT_PITCH.md)
-- existing [NLNET_APPLICATION.md](../NLNET_APPLICATION.md)
-- Cargo metadata declares `MIT` in [Cargo.toml](../Cargo.toml)
+## GardenLiminal role in the stack
 
-## Readiness notes
+GardenLiminal is the runtime and isolation layer of the Liminal Stack:
 
-- The repository now includes the MIT license text to match Cargo metadata.
-- Existing grant material referenced the closed `NGI Zero Entrust` program and
-  overstated the licensing status of LiminalDB. Those issues have been corrected
-  in the updated application draft.
-
-## Recommended next fixes before submission
-
-- align all grant text with `NGI Zero Commons Fund`
-- keep the stack-wide licensing statements consistent across all grant docs
+- secure container runtime for untrusted workloads
+- audit-native lifecycle events persisted via LiminalDB
+- isolation hardening around namespaces, seccomp, and capabilities
+- MIT licensed Rust project
