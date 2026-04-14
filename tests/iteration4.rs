@@ -91,27 +91,30 @@ fn test_secret_versions() -> Result<()> {
 #[cfg(target_os = "linux")]
 fn test_named_volume_lifecycle() -> Result<()> {
     use gl::volumes::named;
+    use tempfile::TempDir;
 
     let vol_name = format!("test-vol-{}", uuid::Uuid::new_v4());
+    let temp_dir = TempDir::new()?;
+    let volumes_base = temp_dir.path().join("volumes");
 
     // Create named volume
-    let vol_path = named::ensure_named_volume(&vol_name, Some("10Mi"))?;
+    let vol_path = named::ensure_named_volume_in(&volumes_base, &vol_name, Some("10Mi"))?;
     assert!(vol_path.exists());
 
     // List should contain our volume
-    let volumes = named::list_named_volumes()?;
+    let volumes = named::list_named_volumes_in(&volumes_base)?;
     assert!(volumes.contains(&vol_name));
 
     // Write data
     std::fs::write(vol_path.join("data.txt"), "persistent")?;
 
     // Ensure again (should reuse existing)
-    let vol_path2 = named::ensure_named_volume(&vol_name, None)?;
+    let vol_path2 = named::ensure_named_volume_in(&volumes_base, &vol_name, None)?;
     assert_eq!(vol_path, vol_path2);
     assert_eq!(std::fs::read_to_string(vol_path2.join("data.txt"))?, "persistent");
 
     // Delete volume
-    named::delete_named_volume(&vol_name)?;
+    named::delete_named_volume_in(&volumes_base, &vol_name)?;
     assert!(!vol_path.exists());
 
     Ok(())
