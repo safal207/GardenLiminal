@@ -123,8 +123,9 @@ fn minimal_syscall_list() -> Vec<i64> {
         nix::libc::SYS_munmap,
         nix::libc::SYS_mremap,
         nix::libc::SYS_madvise,
-        // Process
+        // Process and threads
         nix::libc::SYS_clone,
+        nix::libc::SYS_clone3,
         nix::libc::SYS_fork,
         nix::libc::SYS_vfork,
         nix::libc::SYS_execve,
@@ -143,6 +144,13 @@ fn minimal_syscall_list() -> Vec<i64> {
         nix::libc::SYS_getpgrp,
         nix::libc::SYS_setsid,
         nix::libc::SYS_setpgid,
+        nix::libc::SYS_sched_getaffinity,
+        nix::libc::SYS_sched_setaffinity,
+        nix::libc::SYS_sched_yield,
+        nix::libc::SYS_getcpu,
+        nix::libc::SYS_membarrier,
+        nix::libc::SYS_rseq,
+        nix::libc::SYS_restart_syscall,
         // Signals
         nix::libc::SYS_rt_sigaction,
         nix::libc::SYS_rt_sigprocmask,
@@ -276,6 +284,25 @@ mod tests {
             nix::libc::SYS_statx,
             nix::libc::SYS_faccessat2,
             nix::libc::SYS_readlinkat,
+        ] {
+            assert!(syscalls.contains(&syscall));
+        }
+        build_minimal().expect("minimal profile compiles");
+        build_default().expect("default profile compiles");
+    }
+
+    #[test]
+    fn minimal_and_default_profiles_allow_modern_thread_runtime() {
+        let syscalls = minimal_syscall_list();
+        for syscall in [
+            nix::libc::SYS_clone3,
+            nix::libc::SYS_sched_getaffinity,
+            nix::libc::SYS_sched_setaffinity,
+            nix::libc::SYS_sched_yield,
+            nix::libc::SYS_getcpu,
+            nix::libc::SYS_membarrier,
+            nix::libc::SYS_rseq,
+            nix::libc::SYS_restart_syscall,
         ] {
             assert!(syscalls.contains(&syscall));
         }
