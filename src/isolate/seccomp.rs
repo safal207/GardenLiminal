@@ -146,6 +146,8 @@ fn minimal_syscall_list() -> Vec<i64> {
         nix::libc::SYS_setpgid,
         nix::libc::SYS_sched_getaffinity,
         nix::libc::SYS_sched_setaffinity,
+        nix::libc::SYS_sched_getparam,
+        nix::libc::SYS_sched_getscheduler,
         nix::libc::SYS_sched_yield,
         nix::libc::SYS_getcpu,
         nix::libc::SYS_membarrier,
@@ -158,7 +160,7 @@ fn minimal_syscall_list() -> Vec<i64> {
         nix::libc::SYS_rt_sigsuspend,
         nix::libc::SYS_kill,
         nix::libc::SYS_tgkill,
-        // Filesystem
+        // Filesystem and descriptor setup
         nix::libc::SYS_getcwd,
         nix::libc::SYS_chdir,
         nix::libc::SYS_mkdir,
@@ -186,6 +188,7 @@ fn minimal_syscall_list() -> Vec<i64> {
         nix::libc::SYS_dup,
         nix::libc::SYS_dup2,
         nix::libc::SYS_dup3,
+        nix::libc::SYS_close_range,
         nix::libc::SYS_fcntl,
         nix::libc::SYS_ioctl,
         nix::libc::SYS_pipe,
@@ -298,6 +301,8 @@ mod tests {
             nix::libc::SYS_clone3,
             nix::libc::SYS_sched_getaffinity,
             nix::libc::SYS_sched_setaffinity,
+            nix::libc::SYS_sched_getparam,
+            nix::libc::SYS_sched_getscheduler,
             nix::libc::SYS_sched_yield,
             nix::libc::SYS_getcpu,
             nix::libc::SYS_membarrier,
@@ -306,6 +311,14 @@ mod tests {
         ] {
             assert!(syscalls.contains(&syscall));
         }
+        build_minimal().expect("minimal profile compiles");
+        build_default().expect("default profile compiles");
+    }
+
+    #[test]
+    fn minimal_and_default_profiles_allow_child_descriptor_cleanup() {
+        let syscalls = minimal_syscall_list();
+        assert!(syscalls.contains(&nix::libc::SYS_close_range));
         build_minimal().expect("minimal profile compiles");
         build_default().expect("default profile compiles");
     }
