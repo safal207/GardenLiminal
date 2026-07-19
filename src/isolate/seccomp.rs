@@ -141,6 +141,9 @@ fn minimal_syscall_list() -> Vec<i64> {
         nix::libc::SYS_getgid,
         nix::libc::SYS_geteuid,
         nix::libc::SYS_getegid,
+        nix::libc::SYS_getresuid,
+        nix::libc::SYS_getresgid,
+        nix::libc::SYS_getgroups,
         nix::libc::SYS_getpgrp,
         nix::libc::SYS_setsid,
         nix::libc::SYS_setpgid,
@@ -153,6 +156,21 @@ fn minimal_syscall_list() -> Vec<i64> {
         nix::libc::SYS_membarrier,
         nix::libc::SYS_rseq,
         nix::libc::SYS_restart_syscall,
+        // Credential reduction. Browser zygotes call these to inspect and
+        // reduce their own credentials. no_new_privs and the kernel capability
+        // sets still prevent gaining privileges; denying these calls causes
+        // Chromium to abort in credentials.cc before creating a renderer.
+        nix::libc::SYS_capget,
+        nix::libc::SYS_capset,
+        nix::libc::SYS_setuid,
+        nix::libc::SYS_setgid,
+        nix::libc::SYS_setreuid,
+        nix::libc::SYS_setregid,
+        nix::libc::SYS_setresuid,
+        nix::libc::SYS_setresgid,
+        nix::libc::SYS_setfsuid,
+        nix::libc::SYS_setfsgid,
+        nix::libc::SYS_setgroups,
         // Signals
         nix::libc::SYS_rt_sigaction,
         nix::libc::SYS_rt_sigprocmask,
@@ -319,6 +337,24 @@ mod tests {
     fn minimal_and_default_profiles_allow_child_descriptor_cleanup() {
         let syscalls = minimal_syscall_list();
         assert!(syscalls.contains(&nix::libc::SYS_close_range));
+        build_minimal().expect("minimal profile compiles");
+        build_default().expect("default profile compiles");
+    }
+
+    #[test]
+    fn minimal_and_default_profiles_allow_credential_reduction() {
+        let syscalls = minimal_syscall_list();
+        for syscall in [
+            nix::libc::SYS_getresuid,
+            nix::libc::SYS_getresgid,
+            nix::libc::SYS_capget,
+            nix::libc::SYS_capset,
+            nix::libc::SYS_setresuid,
+            nix::libc::SYS_setresgid,
+            nix::libc::SYS_setgroups,
+        ] {
+            assert!(syscalls.contains(&syscall));
+        }
         build_minimal().expect("minimal profile compiles");
         build_default().expect("default profile compiles");
     }
