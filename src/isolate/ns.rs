@@ -3,21 +3,39 @@ use nix::sched::{unshare, CloneFlags};
 use nix::unistd;
 use std::fs;
 
-/// Create namespaces for isolation
-pub fn create_namespaces(enable_net: bool) -> Result<()> {
-    let mut flags = CloneFlags::CLONE_NEWUSER
-        | CloneFlags::CLONE_NEWPID
+fn namespace_flags(enable_net: bool, enable_user: bool) -> CloneFlags {
+    let mut flags = CloneFlags::CLONE_NEWPID
         | CloneFlags::CLONE_NEWUTS
         | CloneFlags::CLONE_NEWIPC
         | CloneFlags::CLONE_NEWNS;
+
+    if enable_user {
+        flags |= CloneFlags::CLONE_NEWUSER;
+    }
 
     if enable_net {
         flags |= CloneFlags::CLONE_NEWNET;
     }
 
+    flags
+}
+
+/// Create namespaces for isolation.
+///
+/// Rootful workloads do not enter a new user namespace. They already execute
+/// with the privileges required to configure the remaining namespaces, and an
+/// unmapped rootful user namespace turns UID 0 into an overflow identity for
+/// host-backed root filesystems. Rootless workloads opt into CLONE_NEWUSER and
+/// must apply their UID/GID mapping before touching the rootfs.
+pub fn create_namespaces(enable_net: bool, enable_user: bool) -> Result<()> {
+    let flags = namespace_flags(enable_net, enable_user);
     unshare(flags).context("Failed to unshare namespaces")?;
 
-    tracing::debug!("Created namespaces: user, pid, uts, ipc, mnt{}", if enable_net { ", net" } else { "" });
+    tracing::debug!(
+        "Created namespaces: {}pid, uts, ipc, mnt{}",
+        if enable_user { "user, " } else { "" },
+        if enable_net { ", net" } else { "" }
+    );
 
     Ok(())
 }
@@ -45,8 +63,6 @@ pub fn set_hostname(hostname: &str) -> Result<()> {
 
 /// Set no_new_privs to prevent privilege escalation
 pub fn set_no_new_privs() -> Result<()> {
-    // Write to /proc/self/status or use prctl
-    // For now, use prctl via libc
     unsafe {
         let ret = nix::libc::prctl(nix::libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
         if ret != 0 {
@@ -99,4 +115,27 @@ pub fn setns_net(netns_path: &str) -> Result<()> {
     tracing::debug!("Entered network namespace: {}", netns_path);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rootful_mode_omits_user_namespace() {
+        let flags = namespace_flags(false, false);
+        assert!(!flags.contains(CloneFlags::CLONE_NEWUSER));
+        assert!(flags.contains(CloneFlags::CLONE_NEWPID));
+        assert!(flags.contains(CloneFlags::CLONE_NEWUTS));
+        assert!(flags.contains(CloneFlags::CLONE_NEWIPC));
+        assert!(flags.contains(CloneFlags::CLONE_NEWNS));
+        assert!(!flags.contains(CloneFlags::CLONE_NEWNET));
+    }
+
+    #[test]
+    fn rootless_and_network_modes_are_explicit() {
+        let flags = namespace_flags(true, true);
+        assert!(flags.contains(CloneFlags::CLONE_NEWUSER));
+        assert!(flags.contains(CloneFlags::CLONE_NEWNET));
+    }
 }
