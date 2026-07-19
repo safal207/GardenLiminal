@@ -105,13 +105,17 @@ fn minimal_syscall_list() -> Vec<i64> {
         nix::libc::SYS_writev,
         nix::libc::SYS_open,
         nix::libc::SYS_openat,
+        nix::libc::SYS_openat2,
         nix::libc::SYS_close,
         nix::libc::SYS_stat,
         nix::libc::SYS_fstat,
         nix::libc::SYS_lstat,
+        nix::libc::SYS_newfstatat,
+        nix::libc::SYS_statx,
         nix::libc::SYS_lseek,
         nix::libc::SYS_access,
         nix::libc::SYS_faccessat,
+        nix::libc::SYS_faccessat2,
         // Memory
         nix::libc::SYS_brk,
         nix::libc::SYS_mmap,
@@ -159,6 +163,7 @@ fn minimal_syscall_list() -> Vec<i64> {
         nix::libc::SYS_link,
         nix::libc::SYS_symlink,
         nix::libc::SYS_readlink,
+        nix::libc::SYS_readlinkat,
         nix::libc::SYS_chmod,
         nix::libc::SYS_fchmod,
         nix::libc::SYS_chown,
@@ -258,6 +263,22 @@ mod tests {
     fn minimal_and_default_profiles_allow_runtime_entropy() {
         let syscalls = minimal_syscall_list();
         assert!(syscalls.contains(&nix::libc::SYS_getrandom));
+        build_minimal().expect("minimal profile compiles");
+        build_default().expect("default profile compiles");
+    }
+
+    #[test]
+    fn minimal_and_default_profiles_allow_modern_filesystem_metadata() {
+        let syscalls = minimal_syscall_list();
+        for syscall in [
+            nix::libc::SYS_openat2,
+            nix::libc::SYS_newfstatat,
+            nix::libc::SYS_statx,
+            nix::libc::SYS_faccessat2,
+            nix::libc::SYS_readlinkat,
+        ] {
+            assert!(syscalls.contains(&syscall));
+        }
         build_minimal().expect("minimal profile compiles");
         build_default().expect("default profile compiles");
     }
