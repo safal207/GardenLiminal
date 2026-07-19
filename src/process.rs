@@ -53,21 +53,29 @@ impl ProcessRunner {
         // Create isolation config
         let iso_config = IsolationConfig::new(&self.seed, self.run_id.clone());
 
-        // Setup cgroups (parent side)
-        iso_config.apply_parent().context("Failed to apply parent isolation")?;
+        // Setup cgroups (parent side) only when the Seed requested limits.
+        let cgroups_applied = iso_config
+            .apply_parent()
+            .context("Failed to apply parent isolation")?;
+        if cgroups_applied {
+            let evt = events.cgroup_applied();
+            self.store.append_event(&self.run_id, &evt.to_json()?)?;
+        }
 
-        let evt = events.cgroup_applied();
-        self.store.append_event(&self.run_id, &evt.to_json()?)?;
-
-        // Create namespaces
-        ns::create_namespaces(self.seed.net.enable)
+        // Rootless workloads opt into a user namespace. Rootful workloads keep
+        // their existing user identity and isolate pid/uts/ipc/mount (+ net).
+        ns::create_namespaces(self.seed.net.enable, self.seed.user.map_rootless)
             .context("Failed to create namespaces")?;
 
-        let ns_msg = format!(
-            "user, pid, uts, ipc, mnt{}",
-            if self.seed.net.enable { ", net" } else { "" }
-        );
-        let evt = events.ns_created(&ns_msg);
+        let mut namespaces = Vec::new();
+        if self.seed.user.map_rootless {
+            namespaces.push("user");
+        }
+        namespaces.extend(["pid", "uts", "ipc", "mnt"]);
+        if self.seed.net.enable {
+            namespaces.push("net");
+        }
+        let evt = events.ns_created(&namespaces.join(", "));
         self.store.append_event(&self.run_id, &evt.to_json()?)?;
 
         // Clone data needed for child process before fork
@@ -214,15 +222,12 @@ impl ProcessRunner {
                     return Ok(128 + signal as i32);
                 }
                 Ok(WaitStatus::Stopped(_, _)) => {
-                    // Child stopped, continue waiting
                     continue;
                 }
                 Ok(_) => {
-                    // Other status, continue waiting
                     continue;
                 }
                 Err(nix::errno::Errno::EINTR) => {
-                    // Interrupted by signal, retry
                     continue;
                 }
                 Err(e) => {
@@ -251,9 +256,11 @@ impl ProcessRunner {
 
     /// Cleanup resources
     fn cleanup(&self) -> Result<()> {
-        // Cleanup cgroups
-        if let Err(e) = crate::isolate::cgroups::cleanup_cgroup(&self.seed.meta.id) {
-            tracing::warn!("Failed to cleanup cgroups: {}", e);
+        let isolation = IsolationConfig::new(&self.seed, self.run_id.clone());
+        if isolation.cgroups_requested() {
+            if let Err(e) = crate::isolate::cgroups::cleanup_cgroup(&self.seed.meta.id) {
+                tracing::warn!("Failed to cleanup cgroups: {}", e);
+            }
         }
 
         Ok(())
