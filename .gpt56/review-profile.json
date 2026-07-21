@@ -1,0 +1,26 @@
+{
+  "schema_version": "gpt56-review-profile-v1",
+  "repository": "safal207/GardenLiminal",
+  "profile_id": "lifecycle-recovery",
+  "required_roles": [
+    "causal_architect",
+    "temporal_provenance",
+    "adversarial_semantics",
+    "authority_safety",
+    "ci_reliability"
+  ],
+  "required_claim_kinds": ["fact", "observation", "hypothesis"],
+  "focus": [
+    "Model lifecycle transitions explicitly from initialization through readiness, work, drain, close, failure, and recovery.",
+    "Distinguish observed readiness from internal acknowledgement and reject path existence or process liveness as sufficient proof.",
+    "Attack race windows, partial cleanup, orphaned resources, unsafe retry, and false success after asynchronous work.",
+    "Keep lifecycle observations and recovery advice separate from process control, deployment, approval, or merge authority.",
+    "Require deterministic transition evidence, bounded timeouts, platform-aware behavior, and reproducible recovery tests."
+  ],
+  "authority": {
+    "can_execute": false,
+    "can_approve": false,
+    "can_merge": false,
+    "can_deploy": false
+  }
+}
