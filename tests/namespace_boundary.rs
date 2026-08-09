@@ -1,9 +1,9 @@
 use gl::isolate::{idmap, ns};
 use gl::seed::UserConfig;
 use nix::sched::clone;
-use nix::sys::signal::Signal;
-use nix::sys::wait::{waitpid, WaitStatus};
-use nix::unistd;
+use nix::sys::signal::{kill, Signal};
+use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
+use nix::unistd::{self, Pid};
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -19,6 +19,65 @@ struct Probe {
     gid: u32,
     ids: ns::NamespaceIds,
     fresh_tcp_reached_host_listener: bool,
+}
+
+/// Keep clone's backing stack alive even if a privileged assertion panics.
+/// Dropping this guard terminates and reaps an unreaped child before the stack
+/// memory can be released.
+struct TestClonedChild {
+    pid: Pid,
+    _stack: Vec<u8>,
+    reaped: bool,
+}
+
+impl TestClonedChild {
+    fn new(pid: Pid, stack: Vec<u8>) -> Self {
+        Self {
+            pid,
+            _stack: stack,
+            reaped: false,
+        }
+    }
+
+    fn pid(&self) -> Pid {
+        self.pid
+    }
+
+    fn wait_terminal(&mut self) -> Result<WaitStatus, nix::errno::Errno> {
+        loop {
+            match waitpid(self.pid, None) {
+                Ok(status @ WaitStatus::Exited(_, _))
+                | Ok(status @ WaitStatus::Signaled(_, _, _)) => {
+                    self.reaped = true;
+                    return Ok(status);
+                }
+                Ok(_) => continue,
+                Err(nix::errno::Errno::EINTR) => continue,
+                Err(err) => return Err(err),
+            }
+        }
+    }
+}
+
+impl Drop for TestClonedChild {
+    fn drop(&mut self) {
+        if self.reaped {
+            return;
+        }
+
+        match waitpid(self.pid, Some(WaitPidFlag::WNOHANG)) {
+            Ok(WaitStatus::Exited(_, _)) | Ok(WaitStatus::Signaled(_, _, _)) => {
+                self.reaped = true;
+            }
+            Err(nix::errno::Errno::ECHILD) => {
+                self.reaped = true;
+            }
+            Ok(_) | Err(_) => {
+                let _ = kill(self.pid, Signal::SIGKILL);
+                let _ = self.wait_terminal();
+            }
+        }
+    }
 }
 
 #[test]
@@ -55,10 +114,8 @@ fn privileged_supervisor_stays_outside_workload_namespaces() {
     let child_pid = unsafe {
         clone(
             Box::new(move || {
-                unsafe {
-                    nix::libc::close(parent_peer_fd);
-                    nix::libc::close(listener_fd);
-                }
+                nix::libc::close(parent_peer_fd);
+                nix::libc::close(listener_fd);
 
                 let mut gate = [0u8; 1];
                 if child_control.read_exact(&mut gate).is_err() || gate[0] != b'G' {
@@ -101,7 +158,9 @@ fn privileged_supervisor_stays_outside_workload_namespaces() {
     }
     .expect("clone namespaced probe child");
 
-    idmap::map_child_from_parent(child_pid, &user, parent_uid, parent_gid)
+    let mut child = TestClonedChild::new(child_pid, stack);
+
+    idmap::map_child_from_parent(child.pid(), &user, parent_uid, parent_gid)
         .expect("install rootless child mapping from supervisor");
 
     // The host supervisor remains in its original network namespace and can
@@ -119,7 +178,7 @@ fn privileged_supervisor_stays_outside_workload_namespaces() {
     reader.read_line(&mut line).expect("read child probe");
     let probe: Probe = serde_json::from_str(line.trim()).expect("parse child probe");
 
-    let status = waitpid(child_pid, None).expect("wait child");
+    let status = child.wait_terminal().expect("wait child");
     assert!(matches!(status, WaitStatus::Exited(_, 0)), "child status: {status:?}");
 
     let after = ns::current_namespace_ids().expect("supervisor namespace state after");
@@ -143,8 +202,6 @@ fn privileged_supervisor_stays_outside_workload_namespaces() {
         !probe.fresh_tcp_reached_host_listener,
         "fresh workload TCP unexpectedly reached host-network listener"
     );
-
-    drop(stack);
 }
 
 fn set_cloexec(stream: &UnixStream) {
