@@ -32,3 +32,10 @@ jobs:
 
       - name: Benchmark target smoke build
         run: cargo bench --bench manifest_and_events --no-run
+
+      - name: Privileged capability enforcement smoke
+        run: |
+          sudo env "PATH=$PATH" "HOME=$HOME" \
+            cargo test --lib \
+            isolate::caps::tests::privileged_kernel_drop_is_verified \
+            -- --ignored --exact --nocapture
