@@ -461,4 +461,39 @@ mod tests {
     fn bit_position_rejects_out_of_abi_range() {
         assert!(bit_position(64).is_err());
     }
+
+    /// Run only in an isolated privileged Linux process. The test permanently
+    /// lowers the process's CAP_NET_RAW state, so normal `cargo test` keeps it
+    /// ignored. CI invokes this test in a dedicated `sudo cargo test` process.
+    #[test]
+    #[ignore = "requires isolated privileged Linux capability environment"]
+    fn privileged_kernel_drop_is_verified() {
+        const CAP_NET_RAW: u32 = 13;
+
+        let before_data = capget_current().expect("capget before drop");
+        assert!(
+            has_effective(&before_data, CAP_SETPCAP),
+            "privileged fixture requires effective CAP_SETPCAP"
+        );
+        let before = read_state(&before_data, CAP_NET_RAW).expect("state before drop");
+        assert!(before.bounding, "fixture expects CAP_NET_RAW in bounding set");
+        assert!(before.effective, "fixture expects CAP_NET_RAW effective");
+        assert!(before.permitted, "fixture expects CAP_NET_RAW permitted");
+
+        drop_capabilities(&["CAP_NET_RAW".to_string()])
+            .expect("kernel capability drop should succeed");
+
+        let after_data = capget_current().expect("capget after drop");
+        let after = read_state(&after_data, CAP_NET_RAW).expect("state after drop");
+        assert_eq!(
+            after,
+            CapabilityState {
+                effective: false,
+                permitted: false,
+                inheritable: false,
+                bounding: false,
+                ambient: false,
+            }
+        );
+    }
 }
