@@ -33,9 +33,31 @@ jobs:
       - name: Benchmark target smoke build
         run: cargo bench --bench manifest_and_events --no-run
 
-      - name: Privileged capability enforcement smoke
+      - name: Record capability validation environment
         run: |
+          mkdir -p artifacts/capability-enforcement
+          {
+            echo "source_sha=$GITHUB_SHA"
+            echo "runner_os=$RUNNER_OS"
+            uname -a
+            rustc --version
+            cargo --version
+            echo "cap_last_cap=$(cat /proc/sys/kernel/cap_last_cap)"
+            cat /etc/os-release
+          } | tee artifacts/capability-enforcement/environment.txt
+
+      - name: Privileged capability enforcement + execve smoke
+        run: |
+          set -o pipefail
           sudo env "PATH=$PATH" "HOME=$HOME" \
-            cargo test --lib \
-            isolate::caps::tests::privileged_kernel_drop_is_verified \
-            -- --ignored --exact --nocapture
+            cargo test --test capability_enforcement \
+            privileged_drop_survives_execve \
+            -- --ignored --exact --nocapture \
+            | tee artifacts/capability-enforcement/privileged-test.log
+
+      - name: Upload capability enforcement evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: capability-enforcement-${{ github.run_id }}
+          path: artifacts/capability-enforcement
+          if-no-files-found: error
