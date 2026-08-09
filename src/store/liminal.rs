@@ -9,6 +9,9 @@ use tungstenite::{connect, stream::MaybeTlsStream, Message, WebSocket};
 /// Default LiminalDB WebSocket address (liminal-cli default port)
 const DEFAULT_LIMINAL_URL: &str = "ws://127.0.0.1:8787";
 const MAX_PENDING_IMPULSES: usize = 1024;
+const LIFECYCLE_PATTERN_PREFIX: &str = "garden.lifecycle.v1:";
+const LIFECYCLE_TTL_MS: u64 = 86_400_000;
+const LIFECYCLE_STRENGTH: f64 = 0.85;
 
 type LiminalSocket = WebSocket<MaybeTlsStream<TcpStream>>;
 
@@ -22,17 +25,26 @@ struct LiminalState {
 
 /// LiminalDB store adapter.
 ///
-/// GardenLiminal lifecycle records are wrapped in the documented raw LiminalDB
-/// WebSocket command shape:
+/// GardenLiminal lifecycle records are converted to the application-level
+/// LiminalDB `Impulse` schema before being wrapped in the raw WebSocket command:
 ///
 /// ```text
-/// {"cmd":"impulse","data":{...}}
+/// {"cmd":"impulse","data":{
+///   "kind":"write",
+///   "pattern":"garden.lifecycle.v1:<full lifecycle JSON>",
+///   "strength":0.85,
+///   "ttl_ms":86400000,
+///   "tags":["garden","lifecycle","event"]
+/// }}
 /// ```
 ///
-/// Transport semantics are deliberately bounded: WebSocket `send()` success is
-/// evidence that the frame was accepted by the local transport, not a durable
-/// LiminalDB commit acknowledgement. The current LiminalDB impulse protocol has
-/// no per-impulse durable ACK, so this adapter does not claim one.
+/// The JSON suffix preserves the complete lifecycle envelope even though the
+/// current LiminalDB `Impulse` type has no arbitrary metadata field.
+///
+/// Transport semantics remain deliberately bounded: WebSocket `send()` success
+/// is evidence that the frame was accepted by the local transport, not a durable
+/// LiminalDB commit acknowledgement. The current raw impulse protocol has no
+/// per-impulse durable ACK, so this adapter does not claim one.
 pub struct LiminalStore {
     state: Mutex<LiminalState>,
     url: String,
@@ -82,6 +94,32 @@ impl LiminalStore {
         })
     }
 
+    /// Convert the Garden lifecycle envelope into the schema accepted by
+    /// LiminalDB's `parse_impulse_json`: pattern is required, while kind,
+    /// strength, ttl_ms and tags are explicit for evidence-oriented writes.
+    fn encode_lifecycle_impulse(data: Value) -> Result<String> {
+        let record_type = data
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("UNKNOWN")
+            .to_ascii_lowercase();
+        let lifecycle_json = serde_json::to_string(&data)
+            .context("Failed to serialize Garden lifecycle envelope")?;
+        let pattern = format!("{}{}", LIFECYCLE_PATTERN_PREFIX, lifecycle_json);
+
+        serde_json::to_string(&json!({
+            "cmd": "impulse",
+            "data": {
+                "pattern": pattern,
+                "strength": LIFECYCLE_STRENGTH,
+                "ttl_ms": LIFECYCLE_TTL_MS,
+                "kind": "write",
+                "tags": ["garden", "lifecycle", record_type],
+            }
+        }))
+        .context("Failed to serialize LiminalDB impulse command")
+    }
+
     /// Queue an impulse first, then attempt an ordered flush.
     ///
     /// No send error may silently discard the current payload: the FIFO front
@@ -89,11 +127,7 @@ impl LiminalStore {
     /// it is discarded and the still-pending payload is retried on a later Store
     /// call after reconnect.
     fn send_impulse(&self, data: Value) -> Result<()> {
-        let text = serde_json::to_string(&json!({
-            "cmd": "impulse",
-            "data": data
-        }))
-        .context("Failed to serialize LiminalDB impulse")?;
+        let text = Self::encode_lifecycle_impulse(data)?;
 
         let mut state = self
             .state
@@ -250,6 +284,36 @@ mod tests {
         addr
     }
 
+    fn decode_lifecycle_pattern(frame: &Value) -> Value {
+        assert_eq!(frame["cmd"], "impulse");
+        assert_eq!(frame["data"]["kind"], "write");
+        assert_eq!(frame["data"]["ttl_ms"], LIFECYCLE_TTL_MS);
+        assert_eq!(frame["data"]["strength"], LIFECYCLE_STRENGTH);
+        let tags = frame["data"]["tags"].as_array().expect("tags array");
+        assert!(tags.contains(&json!("garden")));
+        assert!(tags.contains(&json!("lifecycle")));
+
+        let pattern = frame["data"]["pattern"].as_str().expect("required pattern");
+        let json_suffix = pattern
+            .strip_prefix(LIFECYCLE_PATTERN_PREFIX)
+            .expect("Garden lifecycle pattern prefix");
+        serde_json::from_str(json_suffix).expect("decode embedded lifecycle JSON")
+    }
+
+    #[test]
+    fn application_schema_has_required_pattern_and_preserves_full_record() {
+        let record = json!({
+            "type": "EVENT",
+            "run_id": "run-schema",
+            "event": {"event": "PROCESS_START", "data": {"pid1": true}}
+        });
+        let encoded = LiminalStore::encode_lifecycle_impulse(record.clone()).unwrap();
+        let frame: Value = serde_json::from_str(&encoded).unwrap();
+        let decoded = decode_lifecycle_pattern(&frame);
+        assert_eq!(decoded, record);
+        assert!(frame["data"]["tags"].as_array().unwrap().contains(&json!("event")));
+    }
+
     #[test]
     fn offline_impulse_is_replayed_in_order_after_reconnect() {
         let addr = reserve_address();
@@ -269,8 +333,9 @@ mod tests {
             for _ in 0..2 {
                 let msg = ws.read().expect("read impulse");
                 let text = msg.into_text().expect("text impulse");
-                let value: Value = serde_json::from_str(&text).expect("parse impulse");
-                seq.push(value["data"]["event"]["seq"].as_i64().unwrap());
+                let frame: Value = serde_json::from_str(&text).expect("parse impulse frame");
+                let lifecycle = decode_lifecycle_pattern(&frame);
+                seq.push(lifecycle["event"]["seq"].as_i64().unwrap());
             }
             seq
         });
