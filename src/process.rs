@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use nix::sched::clone;
 use nix::sys::signal::{kill, Signal};
-use nix::sys::wait::{waitpid, WaitStatus};
+use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::{self, Pid};
 use serde::{Deserialize, Serialize};
 use std::ffi::CString;
@@ -36,6 +36,80 @@ enum ChildNotice {
     Failed {
         error: String,
     },
+}
+
+/// Owns the clone(2) stack for exactly as long as the workload task may still
+/// execute on it. Any early return after clone therefore terminates and reaps
+/// the child before the backing stack memory can be dropped.
+struct ClonedWorkload {
+    pid: Pid,
+    _stack: Vec<u8>,
+    cgroup_seed_id: Option<String>,
+    reaped: bool,
+}
+
+impl ClonedWorkload {
+    fn new(pid: Pid, stack: Vec<u8>, cgroup_seed_id: Option<String>) -> Self {
+        Self {
+            pid,
+            _stack: stack,
+            cgroup_seed_id,
+            reaped: false,
+        }
+    }
+
+    fn pid(&self) -> Pid {
+        self.pid
+    }
+
+    fn wait_terminal(&mut self) -> Result<WaitStatus> {
+        let status = wait_for_terminal(self.pid)?;
+        self.reaped = true;
+        Ok(status)
+    }
+
+    fn terminate(&self) {
+        let _ = kill(self.pid, Signal::SIGKILL);
+    }
+}
+
+impl Drop for ClonedWorkload {
+    fn drop(&mut self) {
+        if !self.reaped {
+            match waitpid(self.pid, Some(WaitPidFlag::WNOHANG)) {
+                Ok(WaitStatus::Exited(_, _)) | Ok(WaitStatus::Signaled(_, _, _)) => {
+                    self.reaped = true;
+                }
+                Err(nix::errno::Errno::ECHILD) => {
+                    // The task is no longer a waitable child, so it cannot
+                    // still be executing on this supervisor-owned stack.
+                    self.reaped = true;
+                }
+                Ok(_) | Err(_) => {
+                    let _ = kill(self.pid, Signal::SIGKILL);
+                    if let Err(err) = wait_for_terminal(self.pid) {
+                        tracing::warn!(
+                            child_pid = self.pid.as_raw(),
+                            error = %err,
+                            "Failed to reap cloned workload during guard cleanup"
+                        );
+                    } else {
+                        self.reaped = true;
+                    }
+                }
+            }
+        }
+
+        if let Some(seed_id) = self.cgroup_seed_id.take() {
+            if let Err(err) = cgroups::cleanup_cgroup(&seed_id) {
+                tracing::warn!(
+                    seed_id = %seed_id,
+                    error = %err,
+                    "Failed to cleanup workload cgroup from clone guard"
+                );
+            }
+        }
+    }
 }
 
 /// Process runner that orchestrates execution while keeping the host-side
@@ -148,35 +222,36 @@ impl ProcessRunner {
             }
         };
 
+        let cgroup_seed_id = cgroup_path
+            .as_ref()
+            .map(|_| self.seed.meta.id.clone());
+        let mut child = ClonedWorkload::new(child_pid, child_stack, cgroup_seed_id);
+
         // Do not release the child until all host-side transitions that target
         // its host PID are complete.
         if self.seed.user.map_rootless {
             if let Err(err) = idmap::map_child_from_parent(
-                child_pid,
+                child.pid(),
                 &self.seed.user,
                 parent_uid,
                 parent_gid,
             ) {
                 return self.abort_blocked_child(
-                    child_pid,
+                    child,
                     supervisor_control,
                     events,
-                    cgroup_path.is_some(),
                     format!("Failed to install rootless UID/GID mapping: {err:#}"),
-                    child_stack,
                 );
             }
         }
 
         if let Some(ref path) = cgroup_path {
-            if let Err(err) = cgroups::move_pid_to_path(path, child_pid.into()) {
+            if let Err(err) = cgroups::move_pid_to_path(path, child.pid().into()) {
                 return self.abort_blocked_child(
-                    child_pid,
+                    child,
                     supervisor_control,
                     events,
-                    true,
                     format!("Failed to move workload into prepared cgroup: {err:#}"),
-                    child_stack,
                 );
             }
             self.append_event(&events.cgroup_applied())?;
@@ -187,12 +262,10 @@ impl ProcessRunner {
 
         if let Err(err) = supervisor_control.write_all(&[CHILD_START_BYTE]) {
             return self.abort_blocked_child(
-                child_pid,
+                child,
                 supervisor_control,
                 events,
-                cgroup_path.is_some(),
                 format!("Failed to release isolated workload: {err}"),
-                child_stack,
             );
         }
         supervisor_control
@@ -284,11 +357,11 @@ impl ProcessRunner {
         }
 
         if let Some(ref error) = protocol_error {
-            tracing::error!(%error, child_pid = child_pid.as_raw(), "Failing closed on child evidence protocol error");
-            let _ = kill(child_pid, Signal::SIGKILL);
+            tracing::error!(%error, child_pid = child.pid().as_raw(), "Failing closed on child evidence protocol error");
+            child.terminate();
         }
 
-        let wait_status = wait_for_terminal(child_pid)?;
+        let wait_status = child.wait_terminal()?;
         let supervisor_ns_after = ns::current_namespace_ids()
             .context("Failed to capture supervisor namespace state after workload")?;
 
@@ -343,13 +416,10 @@ impl ProcessRunner {
             }
         };
 
-        if cgroup_path.is_some() {
-            self.cleanup()?;
-        }
-
-        // clone(2) uses this memory as the child's stack. Keep it owned by the
-        // supervisor until waitpid has observed a terminal child state.
-        drop(child_stack);
+        // `child` remains in scope through every Store write above. Its Drop
+        // now only releases the clone stack (the child is already reaped) and
+        // performs best-effort cgroup cleanup.
+        drop(child);
 
         Ok(result)
     }
@@ -418,24 +488,20 @@ impl ProcessRunner {
 
     fn abort_blocked_child(
         self,
-        child_pid: Pid,
+        mut child: ClonedWorkload,
         control: UnixStream,
         events: EventBuilder,
-        cgroup_prepared: bool,
         error: String,
-        child_stack: Vec<u8>,
     ) -> Result<i32> {
-        // Closing the authorization channel makes the blocked child fail its
-        // read and exit. The clone stack remains owned here until that terminal
-        // state is observed.
+        // Closing the authorization channel lets a still-blocked child observe
+        // EOF. The guard is retained until waitpid has observed termination.
         drop(control);
-        let _ = wait_for_terminal(child_pid);
-        drop(child_stack);
+        if child.wait_terminal().is_err() {
+            child.terminate();
+            let _ = child.wait_terminal();
+        }
 
         self.record_failed_run(&events, &error)?;
-        if cgroup_prepared {
-            let _ = self.cleanup();
-        }
         Ok(CHILD_BOOTSTRAP_FAILURE as i32)
     }
 
@@ -504,9 +570,9 @@ fn wait_for_terminal(child_pid: Pid) -> Result<WaitStatus> {
             Ok(status @ WaitStatus::Exited(_, _)) | Ok(status @ WaitStatus::Signaled(_, _, _)) => {
                 return Ok(status)
             }
-            Ok(WaitStatus::Stopped(_, _)) | Ok(WaitStatus::Continued(_)) | Ok(WaitStatus::StillAlive) => {
-                continue
-            }
+            Ok(WaitStatus::Stopped(_, _))
+            | Ok(WaitStatus::Continued(_))
+            | Ok(WaitStatus::StillAlive) => continue,
             Ok(_) => continue,
             Err(nix::errno::Errno::EINTR) => continue,
             Err(err) => anyhow::bail!("waitpid failed: {err}"),
