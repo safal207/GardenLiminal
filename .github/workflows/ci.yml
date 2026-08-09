@@ -34,10 +34,13 @@ jobs:
         run: cargo bench --bench manifest_and_events --no-run
 
       - name: Record capability validation environment
+        env:
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           mkdir -p artifacts/capability-enforcement
           {
-            echo "source_sha=$GITHUB_SHA"
+            echo "source_sha=$SOURCE_SHA"
+            echo "workflow_sha=$GITHUB_SHA"
             echo "runner_os=$RUNNER_OS"
             uname -a
             rustc --version
