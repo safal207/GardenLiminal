@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use gl::isolate::{mount, ns, seccomp};
+use nix::mount::{mount as nix_mount, MsFlags};
 use nix::sched::{unshare, CloneFlags};
 use std::path::PathBuf;
 
@@ -24,6 +25,17 @@ fn pivot_root_probe() -> Result<()> {
     if probe_mnt == host_mnt_before {
         anyhow::bail!("mount namespace id did not change after unshare");
     }
+
+    // Match the runtime precondition: no mount propagation from this namespace
+    // may leak back to the host namespace.
+    nix_mount(
+        None::<&str>,
+        "/",
+        None::<&str>,
+        MsFlags::MS_REC | MsFlags::MS_PRIVATE,
+        None::<&str>,
+    )
+    .context("make evidence mount namespace private")?;
 
     let base = PathBuf::from(format!("/tmp/gl-isolation-evidence-{}", std::process::id()));
     let rootfs = base.join("rootfs");
