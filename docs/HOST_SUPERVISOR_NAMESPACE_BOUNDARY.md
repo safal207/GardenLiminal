@@ -10,13 +10,14 @@ GardenLiminal separates durable host authority from workload authority:
 host supervisor
   │  owns Store / LiminalDB connection
   │  remains in host namespaces and host cgroup
+  │  writes rootless uid_map/gid_map by bootstrap PID
   │
-  ├─ AF_UNIX lifecycle channel (close-on-exec)
+  ├─ AF_UNIX control + lifecycle channel (close-on-exec)
   │
   └─ namespace bootstrap
        │  enters PID/mount/UTS/IPC and optional network namespace
        │  enters a user namespace only for rootless mapping
-       │  configures uid_map/gid_map when rootless
+       │  blocks on mapping_request / mapping_complete handshake
        │
        └─ fork after CLONE_NEWPID
             └─ workload PID 1
@@ -46,15 +47,17 @@ The host supervisor prepares the workload cgroup and limits but does not add its
 
 ## Fail-closed bootstrap
 
-Namespace creation, rootless mapping, second fork, PID-1 verification, mount/pivot, mapped identity, no_new_privs, capability enforcement and seccomp all happen before workload `exec`. A failure reports `PROCESS_FAILED` when the control channel is available and exits the bootstrap path with the reserved bootstrap-failure code rather than falling through to the workload.
+Namespace creation, host-side rootless mapping handshake, second fork, PID-1 verification, mount/pivot, mapped identity, no_new_privs, capability enforcement and seccomp all happen before workload `exec`. A failure reports `PROCESS_FAILED` when the control channel is available and exits the bootstrap path with the reserved bootstrap-failure code rather than falling through to the workload.
 
 A malformed/broken supervisor control channel causes the host to terminate the bootstrap process group and mark the run failed.
 
 ## Rootless identity mapping
 
-For a rootless Seed, host UID/GID are captured before namespace entry. Immediately after creating the user namespace, the bootstrap writes bounded one-entry `uid_map` and `gid_map` values. The PID-1 child enters the mapped workload identity only after privileged mount setup and verifies the resulting UID/GID.
+For a rootless Seed, host UID/GID are captured before namespace entry. After the bootstrap creates a user namespace it sends `mapping_request` and blocks. The host supervisor then writes bounded one-entry mappings to `/proc/<bootstrap-pid>/uid_map` and `/proc/<bootstrap-pid>/gid_map`, with `setgroups=deny` before the GID mapping, reads both maps back from the kernel, and only then sends `mapping_complete`.
 
-`IDMAP_APPLIED` contains the kernel-read map strings and effective workload UID/GID.
+The bootstrap cannot fork workload PID 1 until that completion message is received. The PID-1 child later enters the mapped workload identity after privileged mount setup and verifies the resulting UID/GID.
+
+`IDMAP_APPLIED` contains the host-verified kernel map strings plus the effective workload UID/GID.
 
 ## Evidence contract
 
