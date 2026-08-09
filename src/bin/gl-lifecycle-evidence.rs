@@ -71,7 +71,9 @@ impl Store for EvidenceStore {
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
-    let mode = args.next().context("usage: gl-lifecycle-evidence <rootful|rootless> <rootfs>")?;
+    let mode = args
+        .next()
+        .context("usage: gl-lifecycle-evidence <rootful|rootless> <rootfs>")?;
     let rootfs = PathBuf::from(
         args.next()
             .context("usage: gl-lifecycle-evidence <rootful|rootless> <rootfs>")?,
@@ -115,25 +117,41 @@ fn main() -> Result<()> {
 
     let runner = ProcessRunner::new(seed, store.clone());
     let exit_code = runner.run().context("ProcessRunner evidence run")?;
-    if exit_code != 0 {
-        anyhow::bail!("evidence workload exited with code {exit_code}");
-    }
 
     let host_after = ns::namespace_snapshot().context("host namespace snapshot after run")?;
-    if host_after != host_before {
-        anyhow::bail!("host namespace IDs changed across ProcessRunner run");
-    }
-
     let events = store.events.lock().unwrap().clone();
     let statuses = store.statuses.lock().unwrap().clone();
     let host_side_checks = *store.host_side_checks.lock().unwrap();
+
+    if exit_code != 0 {
+        eprintln!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "lifecycle_postcondition": "FAIL",
+                "mode": mode,
+                "exit_code": exit_code,
+                "host_namespace_stable": host_after == host_before,
+                "store_host_side_checks": host_side_checks,
+                "host_namespaces_before": host_before,
+                "host_namespaces_after": host_after,
+                "statuses": statuses,
+                "events": events,
+            }))?
+        );
+        anyhow::bail!("evidence workload exited with code {exit_code}");
+    }
+
+    if host_after != host_before {
+        anyhow::bail!("host namespace IDs changed across ProcessRunner run");
+    }
 
     let ns_event = events
         .iter()
         .find(|event| event["event"] == json!(EventType::NsCreated))
         .context("missing NS_CREATED evidence")?;
-    let namespaces: NamespaceSnapshot = serde_json::from_value(ns_event["data"]["namespaces"].clone())
-        .context("decode workload namespace snapshot")?;
+    let namespaces: NamespaceSnapshot =
+        serde_json::from_value(ns_event["data"]["namespaces"].clone())
+            .context("decode workload namespace snapshot")?;
 
     if ns_event["data"]["namespace_pid"] != 1 {
         anyhow::bail!("workload did not report namespace PID 1");
