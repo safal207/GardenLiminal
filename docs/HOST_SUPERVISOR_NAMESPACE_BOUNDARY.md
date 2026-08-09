@@ -55,7 +55,9 @@ A malformed/broken supervisor control channel causes the host to terminate the b
 
 For a rootless Seed, host UID/GID are captured before namespace entry. After the bootstrap creates a user namespace it sends `mapping_request` and blocks. The host supervisor then writes bounded one-entry mappings to `/proc/<bootstrap-pid>/uid_map` and `/proc/<bootstrap-pid>/gid_map`, with `setgroups=deny` before the GID mapping, reads both maps back from the kernel, and only then sends `mapping_complete`.
 
-The bootstrap cannot fork workload PID 1 until that completion message is received. The PID-1 child later enters the mapped workload identity after privileged mount setup and verifies the resulting UID/GID.
+The current unprivileged single-ID contract deliberately maps **namespace root `0:0` to the current host UID/GID**. This lets namespace-root perform mount/pivot setup while remaining an ordinary unprivileged identity in the parent namespace. A requested non-zero rootless UID/GID is rejected until subordinate-ID (`subuid/subgid` + `newuidmap/newgidmap` or equivalent) support exists; GardenLiminal does not pretend that a one-entry map can provide that identity model safely.
+
+The bootstrap cannot fork workload PID 1 until mapping completion is received. The PID-1 child verifies the mapped identity before `no_new_privs`, capability enforcement, seccomp and workload exec.
 
 `IDMAP_APPLIED` contains the host-verified kernel map strings plus the effective workload UID/GID.
 
@@ -64,7 +66,7 @@ The bootstrap cannot fork workload PID 1 until that completion message is receiv
 The privileged lifecycle fixture runs a real `ProcessRunner` twice with a static BusyBox workload and `net.enable=true`:
 
 1. **rootful:** PID/mount/UTS/IPC/net namespaces must differ from the host while the user namespace remains the host user namespace;
-2. **rootless:** PID/mount/UTS/IPC/net/user namespaces must differ from the host and the kernel-read UID/GID maps must match the requested single-ID mapping.
+2. **rootless:** PID/mount/UTS/IPC/net/user namespaces must differ from the host, namespace identity is `0:0`, and kernel-read maps must be exactly `0 <host_uid> 1` / `0 <host_gid> 1`.
 
 The evidence Store checks the current namespace snapshot on every Store method call. Any Store call occurring from a workload namespace fails the fixture.
 
