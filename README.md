@@ -2,30 +2,32 @@
 
 > A process isolation runtime where every lifecycle event is a first-class citizen.
 
-GardenLiminal runs processes in isolated containers using Linux namespaces, cgroups v2, and seccomp — and emits a structured audit trail for every step it takes. It is designed to work natively with [LiminalDB](https://github.com/safal207/LiminalDB), a biological-inspired event store that remembers the full history of your workloads.
+GardenLiminal runs local workloads through Linux namespace, cgroup, mount/`pivot_root`, `no_new_privs`, and seccomp primitives — and emits a structured audit trail for the lifecycle steps it can verify. It is designed to work natively with [LiminalDB](https://github.com/safal207/LiminalDB), an event store that remembers and replays workload history.
 
-```
-seed planted → namespaces created → cgroups applied →
-capabilities dropped → process started → process exited
+```text
+seed planted → namespaces/mounts configured →
+no_new_privs + seccomp policy → process started → process exited
         ↓
-  every step flows into LiminalDB as an impulse
+  verified lifecycle events flow into LiminalDB as impulses
 ```
 
 ---
 
 ## Why GardenLiminal?
 
-Most container runtimes treat observability as an afterthought — you bolt on Falco, Sysdig, or auditd separately. GardenLiminal takes the opposite approach: **the audit trail is built into the runtime itself.**
+Most container runtimes treat observability as a separate layer — you commonly add Falco, Sysdig, auditd, or another agent. GardenLiminal explores the opposite design: **make isolation lifecycle evidence part of the runtime path itself.**
 
-Every isolation step emits a structured JSON event. Those events flow into LiminalDB where they are stored as impulses, queryable via LQL, and replayable as a timeline. You get compliance-grade observability without a separate agent.
+Isolation steps emit structured JSON events. Those events can flow into LiminalDB where they are stored as impulses, queryable via LQL, and replayable as a timeline.
+
+> GardenLiminal is an early-stage runtime and is not a production sandbox certification. See [`docs/ISOLATION_HARDENING_AUDIT_2026-08-09.md`](docs/ISOLATION_HARDENING_AUDIT_2026-08-09.md) for the current security/evidence boundary.
 
 | Feature | containerd / Podman | GardenLiminal |
 |---|---|---|
-| Audit trail | External agent required | Built-in, per step |
-| Security policies | Flat profiles | Versioned Pacts (`web-api@1`) |
-| Event persistence | Logs only | LiminalDB impulses |
-| Memory safety | Go (GC) | Rust (no GC, no unsafe allocs) |
-| Rootless by default | Optional | Yes |
+| Audit trail | External tooling commonly used | Built into the runtime lifecycle path |
+| Security policies | Runtime/profile specific | Versioned Pact metadata + built-in seccomp profiles |
+| Event persistence | Logs / external integrations | LiminalDB impulses |
+| Memory safety | Go / systems components | Rust |
+| Rootless path | Supported by mature runtimes | Experimental UID/GID mapping path; validation pending |
 
 ---
 
@@ -38,26 +40,28 @@ GardenLiminal uses a botanical metaphor that maps directly to its architecture:
 | **Seed** | A single-process workload manifest (YAML) |
 | **Garden** | A multi-container pod — several Seeds sharing network and volumes |
 | **Sprout** | A running isolated process |
-| **Pact** | A versioned security policy (`drop_caps`, `seccomp_profile`) |
+| **Pact** | A versioned security-policy record |
 | **Impulse** | A lifecycle event sent to LiminalDB |
 
-The name *Liminal* refers to the threshold state — the boundary between the host OS and the isolated environment. GardenLiminal lives and operates in that boundary, recording everything that crosses it.
+The name *Liminal* refers to the threshold state — the boundary between the host OS and the isolated environment.
 
 ---
 
 ## Features
 
-- **Full Linux isolation** — user, pid, uts, ipc, mnt, net namespaces
+- **Linux isolation primitives** — user, pid, uts, ipc, mnt, and optional net namespaces
+- **Mount isolation** — private mount propagation plus `pivot_root` implementation
 - **Resource limits** — CPU shares, memory, PID limits via cgroups v2
-- **Rootless mode** — UID/GID mapping, no root required for process isolation
+- **Rootless mapping path** — UID/GID mapping implementation; kernel-pinned validation still pending
+- **Seccomp BPF profiles** — built-in `strict`, `minimal`, and `default` allow-list profiles via `seccompiler`
+- **Fail-closed capability policy** — non-empty capability-drop requests are currently rejected until kernel enforcement is implemented
 - **OverlayFS** — multi-layer rootfs for containers
 - **OCI image support** — import and unpack OCI image layers
 - **5 volume types** — emptyDir (disk/tmpfs), hostPath, namedVolume, config, secret
 - **Secrets management** — tmpfs-backed, strict permissions (0400), value masking in logs
-- **Versioned security policies** — Pacts with seccomp profiles and capability lists
 - **Service discovery** — DNS schema `service-name.pod-name.garden`
 - **Prometheus metrics** — HTTP exporter on `127.0.0.1:9464`
-- **LiminalDB integration** — every event sent as a WebSocket impulse
+- **LiminalDB integration** — lifecycle events can be sent as WebSocket impulses
 
 ---
 
@@ -67,11 +71,10 @@ The name *Liminal* refers to the threshold state — the boundary between the ho
 
 - Rust 1.70+
 - Linux kernel 5.10+ with cgroups v2
-- User namespaces enabled
+- User namespaces enabled for rootless experiments
 
 ```bash
-# Check user namespace support
-cat /proc/sys/kernel/unprivileged_userns_clone   # should be 1
+cat /proc/sys/kernel/unprivileged_userns_clone
 ```
 
 ### Build
@@ -84,13 +87,13 @@ cargo build --release
 ### Run a container
 
 ```bash
-# Inspect a seed manifest
 ./target/release/gl inspect -f examples/seed-busybox.yaml
-
-# Run with in-memory event store (stdout)
 sudo ./target/release/gl run -f examples/seed-busybox.yaml --store mem
+```
 
-# Run with LiminalDB (events persist, queryable via LQL)
+### Run with LiminalDB
+
+```bash
 sudo ./target/release/gl run -f examples/seed-busybox.yaml --store liminal
 ```
 
@@ -104,17 +107,17 @@ sudo ./target/release/gl garden run -f examples/garden-echo.yaml --store mem
 
 ## LiminalDB Integration
 
-GardenLiminal connects to [LiminalDB](https://github.com/safal207/LiminalDB) via WebSocket and sends every lifecycle event as an impulse.
+GardenLiminal connects to [LiminalDB](https://github.com/safal207/LiminalDB) via WebSocket and sends lifecycle events as impulses.
 
 ```bash
 # Start LiminalDB
 liminal-cli
 
-# Run a container — events flow into LiminalDB automatically
+# Run a container — events flow into LiminalDB
 LIMINAL_URL=ws://127.0.0.1:8787 \
   sudo -E ./target/release/gl run -f examples/seed-busybox.yaml --store liminal
 
-# Query the event history via LQL
+# Query event history
 echo '{"cmd":"lql","q":"SELECT * WHERE type = EVENT LIMIT 20"}' \
   | websocat -n1 ws://127.0.0.1:8787
 
@@ -129,7 +132,7 @@ Configure the LiminalDB endpoint:
 export LIMINAL_URL=ws://192.168.1.10:8787
 ```
 
-See `examples/demo-liminaldb.sh` for the full end-to-end demo.
+See `examples/demo-liminaldb.sh` for the GardenLiminal → LiminalDB demo path.
 
 ---
 
@@ -156,21 +159,27 @@ limits:
     max: 64
 security:
   hostname: "seed-demo"
-  drop_caps: ["NET_ADMIN", "SYS_ADMIN"]
+  drop_caps: []
   seccomp_profile: "minimal"
 user:
   uid: 1000
   gid: 1000
-  map_rootless: true
+  map_rootless: false
 store:
-  kind: "liminal"
+  kind: "mem"
 ```
+
+Current security boundary:
+
+- `seccomp_profile` accepts only `strict`, `minimal`, or `default`; unknown names fail closed;
+- non-empty `drop_caps` currently fails closed because kernel capability enforcement is not implemented yet;
+- rootless mapping should be treated as experimental until the dedicated kernel-pinned validation pack exists.
 
 ---
 
 ## Lifecycle Events
 
-Every isolation step emits a structured JSON event:
+Every verified lifecycle step can emit a structured JSON event:
 
 ```json
 {
@@ -184,33 +193,32 @@ Every isolation step emits a structured JSON event:
 }
 ```
 
-Full event sequence:
+Typical sequence:
 
+```text
+RUN_CREATED → SEED_LOADED → CGROUP_APPLIED → NS_CREATED →
+MOUNT_DONE → [IDMAP_APPLIED] → [SECCOMP_ENABLED] →
+PROCESS_START → PROCESS_EXIT
 ```
-RUN_CREATED → SEED_LOADED → NS_CREATED → MOUNT_DONE →
-CGROUP_APPLIED → IDMAP_APPLIED → CAPS_DROPPED →
-SECCOMP_ENABLED → PROCESS_START → PROCESS_EXIT
-```
+
+`CAPS_DROPPED` is reserved for a future path where a non-empty capability policy has actually been enforced successfully. The runtime does not emit that event for an empty policy.
 
 For pods (Gardens):
 
-```
+```text
 POD_NET_READY → CONTAINER_START × N → CONTAINER_EXIT × N → POD_EXIT
 ```
 
 ---
 
-## Security Policies (Pacts)
+## Security Policies
 
-Pacts are versioned security profiles referenced by name:
+There are currently two related concepts:
 
-```yaml
-security:
-  seccomp_profile: "web-api@1"
-  drop_caps: ["NET_ADMIN", "SYS_ADMIN"]
-```
+1. **Seed runtime seccomp profiles** — `strict`, `minimal`, `default`; these compile to BPF through `seccompiler`.
+2. **Pact records** — versioned policy metadata stored by `PactStore` (for example `minimal@1`, `web-api@1`). The Pact model is broader than the currently wired runtime enforcement path.
 
-Built-in pacts: `minimal`, `web-api@1`. Custom pacts can be loaded at runtime.
+Capability lists in policy metadata must not be read as evidence of kernel capability enforcement. Non-empty `drop_caps` requests fail closed until Phase 1 of the isolation hardening plan is implemented.
 
 ---
 
@@ -218,11 +226,11 @@ Built-in pacts: `minimal`, `web-api@1`. Custom pacts can be loaded at runtime.
 
 ```bash
 # Single process
-gl inspect -f seed.yaml          # validate manifest
-gl prepare -f seed.yaml          # check prerequisites
-gl run -f seed.yaml --store mem  # run with isolation
+gl inspect -f seed.yaml
+gl prepare -f seed.yaml
+gl run -f seed.yaml --store mem
 
-# Pod (multi-container)
+# Pod
 gl garden inspect -f garden.yaml
 gl garden run -f garden.yaml
 gl garden stats -f garden.yaml
@@ -245,59 +253,60 @@ gl net status
 
 ## Architecture
 
-```
+```text
 gl (binary)
 ├── CLI (clap)
 ├── Seed / Garden Parser (YAML)
 ├── Isolation Layer
 │   ├── Namespaces (user, pid, uts, ipc, mnt, net)
-│   ├── Mounts (OverlayFS, chroot, bind mounts)
-│   ├── UID/GID Mapping (rootless)
+│   ├── Mounts (OverlayFS, pivot_root, chroot fallback, bind mounts)
+│   ├── UID/GID Mapping (experimental rootless path)
 │   ├── Cgroups v2 (cpu, memory, pids)
-│   ├── Capabilities (drop)
-│   ├── Seccomp profiles
+│   ├── no_new_privs
+│   ├── Capabilities (policy surface; kernel enforcement pending)
+│   ├── Seccomp BPF profiles
 │   └── Network (bridge gl0, veth, IPAM 10.44.0.0/16)
 ├── Pod Supervisor (lifecycle, restart policies, crash loop detection)
 ├── Volume Manager (emptyDir, hostPath, namedVolume, config, secret)
 ├── Secrets (tmpfs, 0400 permissions, version support)
 ├── Metrics (Prometheus HTTP on :9464)
-├── Event System (structured JSON, all lifecycle steps)
+├── Event System (structured lifecycle evidence)
 └── Store
-    ├── Memory (in-process, events to stdout)
-    └── LiminalDB (WebSocket impulses → persistent, queryable)
+    ├── Memory
+    └── LiminalDB (WebSocket impulses)
 ```
 
 ---
 
 ## Project Structure
 
-```
+```text
 src/
-├── main.rs          # Entry point
-├── cli.rs           # CLI interface
-├── seed.rs          # Seed & Garden config parser
-├── events.rs        # Event model + builders
-├── process.rs       # Process runner (fork/exec/wait/reap)
-├── pod.rs           # Pod supervisor
-├── metrics.rs       # Prometheus metrics
-├── isolate/         # Isolation primitives
-│   ├── ns.rs        # Namespaces
-│   ├── mount.rs     # Mounts
-│   ├── overlay.rs   # OverlayFS
-│   ├── idmap.rs     # UID/GID mapping
-│   ├── cgroups.rs   # Cgroups v2
-│   ├── caps.rs      # Capabilities
-│   ├── seccomp.rs   # Seccomp
-│   ├── net.rs       # Network (bridge, veth, IPAM)
-│   └── dns.rs       # Service discovery
-├── store/           # Storage backends
-│   ├── mem.rs       # In-memory store
-│   ├── liminal.rs   # LiminalDB WebSocket adapter
-│   ├── cas.rs       # Content-addressable storage (OCI)
-│   ├── pacts.rs     # Security policies
-│   └── oci.rs       # OCI image parsing
-├── volumes/         # Volume management
-└── secrets/         # Secrets management
+├── main.rs
+├── cli.rs
+├── seed.rs
+├── events.rs
+├── process.rs
+├── pod.rs
+├── metrics.rs
+├── isolate/
+│   ├── ns.rs
+│   ├── mount.rs
+│   ├── overlay.rs
+│   ├── idmap.rs
+│   ├── cgroups.rs
+│   ├── caps.rs
+│   ├── seccomp.rs
+│   ├── net.rs
+│   └── dns.rs
+├── store/
+│   ├── mem.rs
+│   ├── liminal.rs
+│   ├── cas.rs
+│   ├── pacts.rs
+│   └── oci.rs
+├── volumes/
+└── secrets/
 ```
 
 ---
@@ -305,13 +314,8 @@ src/
 ## Development
 
 ```bash
-# Run tests
 cargo test
-
-# Debug logging
 RUST_LOG=debug sudo ./target/release/gl run -f examples/seed-busybox.yaml
-
-# Full integration demo with LiminalDB
 ./examples/demo-liminaldb.sh
 ```
 
@@ -319,19 +323,22 @@ RUST_LOG=debug sudo ./target/release/gl run -f examples/seed-busybox.yaml
 
 ---
 
-## Roadmap
+## Isolation hardening status
 
-- [x] Single process isolation (namespaces, cgroups, seccomp)
-- [x] Multi-container pods (Garden + OverlayFS + network)
-- [x] OCI image support
-- [x] Volume management (5 types)
-- [x] Secrets management (tmpfs, versioned)
-- [x] Prometheus metrics exporter
-- [x] LiminalDB WebSocket integration
-- [ ] `pivot_root` (replace current `chroot`)
-- [ ] Full seccomp filter implementation
+- [x] Namespace/cgroup isolation implementation
+- [x] Private mount propagation
+- [x] `pivot_root` implementation
+- [x] Seccomp BPF profile implementation (`strict`, `minimal`, `default`)
+- [x] Unknown seccomp profile fails closed
+- [x] Non-enforced capability requests fail closed instead of producing false success evidence
+- [ ] Kernel-enforced capability dropping + post-condition verification
+- [ ] Host-supervisor / workload namespace lifecycle redesign (Issue #6)
+- [ ] Rootful `pivot_root` and seccomp validation pack tied to exact kernel/source revisions
+- [ ] Rootless UID/GID mapping validation pack
 - [ ] CNI plugin support
 - [ ] LiminalDB auth (API key handshake)
+
+See [`docs/ISOLATION_HARDENING_AUDIT_2026-08-09.md`](docs/ISOLATION_HARDENING_AUDIT_2026-08-09.md).
 
 ---
 
@@ -343,7 +350,5 @@ MIT
 
 ## Ecosystem
 
-GardenLiminal is part of a two-project ecosystem:
-
-- **GardenLiminal** — the runtime. Plants seeds, grows gardens, records every moment.
-- **[LiminalDB](https://github.com/safal207/LiminalDB)** — the memory. Stores impulses, replays timelines, queries history.
+- **GardenLiminal** — runtime/isolation research implementation.
+- **[LiminalDB](https://github.com/safal207/LiminalDB)** — durable event/evidence memory.
