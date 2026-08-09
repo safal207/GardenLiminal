@@ -12,10 +12,11 @@ pub struct AppliedIdMap {
 /// Configure a bootstrap child's one-entry UID/GID map from its parent in the
 /// parent user namespace.
 ///
-/// This is the canonical rootless mapping boundary: the child first enters a
-/// new user namespace, then blocks on the supervisor handshake. The host-side
-/// supervisor writes and reads back `/proc/<pid>/{uid_map,gid_map}` before the
-/// bootstrap is allowed to fork workload PID 1.
+/// The current bounded rootless mode intentionally maps namespace root (0:0)
+/// to the current host UID/GID. Supporting non-zero workload IDs safely for an
+/// unprivileged caller requires subordinate ID ranges/newuidmap/newgidmap and
+/// is outside this single-ID implementation. Non-zero requested IDs therefore
+/// fail closed rather than creating a misleading partial rootless boundary.
 pub fn configure_child_uid_gid_mapping(
     child_pid: i32,
     user_cfg: &UserConfig,
@@ -25,22 +26,27 @@ pub fn configure_child_uid_gid_mapping(
     if child_pid <= 0 {
         anyhow::bail!("Invalid bootstrap PID for idmap: {}", child_pid);
     }
+    if user_cfg.uid != 0 || user_cfg.gid != 0 {
+        anyhow::bail!(
+            "Current rootless single-ID mode supports only namespace UID/GID 0:0; requested {}:{}. Non-zero rootless identities require subordinate-ID mapping support",
+            user_cfg.uid,
+            user_cfg.gid
+        );
+    }
 
     let proc_dir = format!("/proc/{child_pid}");
     let uid_map_path = format!("{proc_dir}/uid_map");
     let gid_map_path = format!("{proc_dir}/gid_map");
     let setgroups_path = format!("{proc_dir}/setgroups");
 
-    let uid_map = uid_map_line(user_cfg.uid, host_uid);
+    let uid_map = uid_map_line(0, host_uid);
     std::fs::write(&uid_map_path, &uid_map)
         .with_context(|| format!("Failed to write {uid_map_path}"))?;
 
-    // Linux requires an unprivileged parent to disable setgroups before it may
-    // write a gid map for the child user namespace.
     std::fs::write(&setgroups_path, "deny")
         .with_context(|| format!("Failed to write {setgroups_path}"))?;
 
-    let gid_map = gid_map_line(user_cfg.gid, host_gid);
+    let gid_map = gid_map_line(0, host_gid);
     std::fs::write(&gid_map_path, &gid_map)
         .with_context(|| format!("Failed to write {gid_map_path}"))?;
 
@@ -49,14 +55,12 @@ pub fn configure_child_uid_gid_mapping(
     let observed_gid = std::fs::read_to_string(&gid_map_path)
         .with_context(|| format!("Failed to read back {gid_map_path}"))?;
 
-    verify_single_map("uid_map", &observed_uid, user_cfg.uid, host_uid)?;
-    verify_single_map("gid_map", &observed_gid, user_cfg.gid, host_gid)?;
+    verify_single_map("uid_map", &observed_uid, 0, host_uid)?;
+    verify_single_map("gid_map", &observed_gid, 0, host_gid)?;
 
     tracing::debug!(
         child_pid,
-        "Configured and verified rootless UID/GID map {}:{} -> host {}:{}",
-        user_cfg.uid,
-        user_cfg.gid,
+        "Configured and verified namespace-root mapping 0:0 -> host {}:{}",
         host_uid,
         host_gid
     );
@@ -120,14 +124,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn single_id_maps_are_explicit_and_bounded() {
-        assert_eq!(uid_map_line(1000, 501), "1000 501 1\n");
-        assert_eq!(gid_map_line(1000, 20), "1000 20 1\n");
+    fn namespace_root_single_id_maps_are_explicit_and_bounded() {
+        assert_eq!(uid_map_line(0, 501), "0 501 1\n");
+        assert_eq!(gid_map_line(0, 20), "0 20 1\n");
     }
 
     #[test]
     fn single_map_verifier_rejects_extra_ranges() {
-        assert!(verify_single_map("uid_map", "1000 501 1\n1001 502 1\n", 1000, 501).is_err());
-        assert!(verify_single_map("uid_map", "1000 501 1\n", 1000, 501).is_ok());
+        assert!(verify_single_map("uid_map", "0 501 1\n1 502 1\n", 0, 501).is_err());
+        assert!(verify_single_map("uid_map", "0 501 1\n", 0, 501).is_ok());
+    }
+
+    #[test]
+    fn non_zero_rootless_identity_is_outside_single_id_contract() {
+        let cfg = UserConfig {
+            uid: 1000,
+            gid: 1000,
+            map_rootless: true,
+        };
+        // The public guard is exercised before procfs access when PID is valid.
+        let err = configure_child_uid_gid_mapping(1, &cfg, 501, 20).unwrap_err();
+        assert!(err.to_string().contains("supports only namespace UID/GID 0:0"));
     }
 }
