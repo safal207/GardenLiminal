@@ -233,9 +233,9 @@ fn read_bounding(cap: u32) -> Result<bool> {
         nix::libc::prctl(
             PR_CAPBSET_READ_OP,
             cap as nix::libc::c_ulong,
-            0,
-            0,
-            0,
+            0 as nix::libc::c_ulong,
+            0 as nix::libc::c_ulong,
+            0 as nix::libc::c_ulong,
         )
     };
     match ret {
@@ -254,9 +254,9 @@ fn drop_bounding(cap: u32) -> Result<()> {
         nix::libc::prctl(
             PR_CAPBSET_DROP_OP,
             cap as nix::libc::c_ulong,
-            0,
-            0,
-            0,
+            0 as nix::libc::c_ulong,
+            0 as nix::libc::c_ulong,
+            0 as nix::libc::c_ulong,
         )
     };
     if ret != 0 {
@@ -275,8 +275,8 @@ fn read_ambient(cap: u32) -> Result<bool> {
             PR_CAP_AMBIENT_OP,
             PR_CAP_AMBIENT_IS_SET_OP as nix::libc::c_ulong,
             cap as nix::libc::c_ulong,
-            0,
-            0,
+            0 as nix::libc::c_ulong,
+            0 as nix::libc::c_ulong,
         )
     };
     match ret {
@@ -296,8 +296,8 @@ fn lower_ambient(cap: u32) -> Result<()> {
             PR_CAP_AMBIENT_OP,
             PR_CAP_AMBIENT_LOWER_OP as nix::libc::c_ulong,
             cap as nix::libc::c_ulong,
-            0,
-            0,
+            0 as nix::libc::c_ulong,
+            0 as nix::libc::c_ulong,
         )
     };
     if ret != 0 {
