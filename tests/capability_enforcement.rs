@@ -4,45 +4,73 @@ use std::process::Command;
 const CAP_SETPCAP: u32 = 8;
 const CAP_NET_RAW: u32 = 13;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProcStatus {
+    cap_inh: u64,
+    cap_prm: u64,
+    cap_eff: u64,
+    cap_bnd: u64,
+    cap_amb: u64,
+    no_new_privs: u32,
+}
+
+impl ProcStatus {
+    fn assert_cap_absent(&self, cap: u32) {
+        let mask = 1u64 << cap;
+        for (name, value) in [
+            ("CapInh", self.cap_inh),
+            ("CapPrm", self.cap_prm),
+            ("CapEff", self.cap_eff),
+            ("CapBnd", self.cap_bnd),
+            ("CapAmb", self.cap_amb),
+        ] {
+            assert_eq!(
+                value & mask,
+                0,
+                "{} still contains capability {} in {:?}",
+                name,
+                cap,
+                self
+            );
+        }
+    }
+}
+
 fn status_text() -> String {
     std::fs::read_to_string("/proc/self/status").expect("read /proc/self/status")
 }
 
-fn hex_field(status: &str, key: &str) -> u64 {
-    let line = status
-        .lines()
-        .find(|line| line.starts_with(key))
-        .unwrap_or_else(|| panic!("missing {} in /proc status", key));
-    let value = line
-        .split_whitespace()
-        .nth(1)
-        .unwrap_or_else(|| panic!("missing value for {}", key));
-    u64::from_str_radix(value, 16).unwrap_or_else(|_| panic!("invalid hex for {}", key))
-}
+fn parse_status(status: &str) -> ProcStatus {
+    let mut cap_inh = None;
+    let mut cap_prm = None;
+    let mut cap_eff = None;
+    let mut cap_bnd = None;
+    let mut cap_amb = None;
+    let mut no_new_privs = None;
 
-fn no_new_privs(status: &str) -> u32 {
-    let line = status
-        .lines()
-        .find(|line| line.starts_with("NoNewPrivs:"))
-        .expect("missing NoNewPrivs in /proc status");
-    line.split_whitespace()
-        .nth(1)
-        .expect("missing NoNewPrivs value")
-        .parse()
-        .expect("invalid NoNewPrivs value")
-}
+    for line in status.lines() {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let value = value.trim();
+        match key {
+            "CapInh" => cap_inh = Some(u64::from_str_radix(value, 16).expect("invalid CapInh")),
+            "CapPrm" => cap_prm = Some(u64::from_str_radix(value, 16).expect("invalid CapPrm")),
+            "CapEff" => cap_eff = Some(u64::from_str_radix(value, 16).expect("invalid CapEff")),
+            "CapBnd" => cap_bnd = Some(u64::from_str_radix(value, 16).expect("invalid CapBnd")),
+            "CapAmb" => cap_amb = Some(u64::from_str_radix(value, 16).expect("invalid CapAmb")),
+            "NoNewPrivs" => no_new_privs = Some(value.parse().expect("invalid NoNewPrivs")),
+            _ => {}
+        }
+    }
 
-fn assert_cap_absent(status: &str, cap: u32) {
-    let mask = 1u64 << cap;
-    for key in ["CapInh:", "CapPrm:", "CapEff:", "CapBnd:", "CapAmb:"] {
-        assert_eq!(
-            hex_field(status, key) & mask,
-            0,
-            "{} still contains capability {}\n{}",
-            key,
-            cap,
-            status
-        );
+    ProcStatus {
+        cap_inh: cap_inh.expect("missing CapInh"),
+        cap_prm: cap_prm.expect("missing CapPrm"),
+        cap_eff: cap_eff.expect("missing CapEff"),
+        cap_bnd: cap_bnd.expect("missing CapBnd"),
+        cap_amb: cap_amb.expect("missing CapAmb"),
+        no_new_privs: no_new_privs.expect("missing NoNewPrivs"),
     }
 }
 
@@ -54,24 +82,42 @@ fn assert_cap_absent(status: &str, cap: u32) {
 #[test]
 #[ignore = "requires isolated privileged Linux capability environment"]
 fn privileged_drop_survives_execve() {
-    let before = status_text();
-    println!("--- capability state before ---\n{}", before);
+    let before_text = status_text();
+    let before = parse_status(&before_text);
+    println!("--- capability state before ---\n{}", before_text);
 
     let setpcap_mask = 1u64 << CAP_SETPCAP;
     let net_raw_mask = 1u64 << CAP_NET_RAW;
-    assert_ne!(hex_field(&before, "CapEff:") & setpcap_mask, 0, "fixture requires CAP_SETPCAP effective");
-    assert_ne!(hex_field(&before, "CapEff:") & net_raw_mask, 0, "fixture requires CAP_NET_RAW effective");
-    assert_ne!(hex_field(&before, "CapPrm:") & net_raw_mask, 0, "fixture requires CAP_NET_RAW permitted");
-    assert_ne!(hex_field(&before, "CapBnd:") & net_raw_mask, 0, "fixture requires CAP_NET_RAW bounded");
+    assert_ne!(
+        before.cap_eff & setpcap_mask,
+        0,
+        "fixture requires CAP_SETPCAP effective"
+    );
+    assert_ne!(
+        before.cap_eff & net_raw_mask,
+        0,
+        "fixture requires CAP_NET_RAW effective"
+    );
+    assert_ne!(
+        before.cap_prm & net_raw_mask,
+        0,
+        "fixture requires CAP_NET_RAW permitted"
+    );
+    assert_ne!(
+        before.cap_bnd & net_raw_mask,
+        0,
+        "fixture requires CAP_NET_RAW bounded"
+    );
 
     ns::set_no_new_privs().expect("set no_new_privs");
     caps::drop_capabilities(&["CAP_NET_RAW".to_string()])
         .expect("enforce CAP_NET_RAW drop");
 
-    let after = status_text();
-    println!("--- capability state after drop ---\n{}", after);
-    assert_eq!(no_new_privs(&after), 1);
-    assert_cap_absent(&after, CAP_NET_RAW);
+    let after_text = status_text();
+    let after = parse_status(&after_text);
+    println!("--- capability state after drop ---\n{}", after_text);
+    assert_eq!(after.no_new_privs, 1);
+    after.assert_cap_absent(CAP_NET_RAW);
 
     // Command::output() creates a child and execs /bin/sh. Reading status in
     // that process proves the dropped capability did not reappear across the
@@ -85,8 +131,9 @@ fn privileged_drop_survives_execve() {
         .expect("exec child status probe");
     assert!(output.status.success(), "child status probe failed");
 
-    let child = String::from_utf8(output.stdout).expect("child status UTF-8");
-    println!("--- capability state after child execve ---\n{}", child);
-    assert_eq!(no_new_privs(&child), 1);
-    assert_cap_absent(&child, CAP_NET_RAW);
+    let child_text = String::from_utf8(output.stdout).expect("child status UTF-8");
+    let child = parse_status(&child_text);
+    println!("--- capability state after child execve ---\n{}", child_text);
+    assert_eq!(child.no_new_privs, 1);
+    child.assert_cap_absent(CAP_NET_RAW);
 }
