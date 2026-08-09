@@ -1,25 +1,67 @@
 use anyhow::{Context, Result};
 use nix::sched::{unshare, CloneFlags};
 use nix::unistd;
+use serde::{Deserialize, Serialize};
 use std::fs;
 
-/// Create namespaces for isolation
-pub fn create_namespaces(enable_net: bool) -> Result<()> {
-    let mut flags = CloneFlags::CLONE_NEWUSER
-        | CloneFlags::CLONE_NEWPID
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NamespaceSnapshot {
+    pub user: String,
+    pub pid: String,
+    pub pid_for_children: String,
+    pub mnt: String,
+    pub uts: String,
+    pub ipc: String,
+    pub net: String,
+}
+
+/// Create namespaces for the workload bootstrap process.
+///
+/// `CLONE_NEWPID` affects subsequent children, so callers must fork once more
+/// after this function returns to create PID 1 in the new PID namespace.
+/// A user namespace is created only for the rootless mapping path; rootful
+/// workloads keep the host user namespace while still receiving PID/mount/
+/// UTS/IPC and optional network namespaces.
+pub fn create_namespaces(enable_net: bool, enable_user: bool) -> Result<()> {
+    let mut flags = CloneFlags::CLONE_NEWPID
         | CloneFlags::CLONE_NEWUTS
         | CloneFlags::CLONE_NEWIPC
         | CloneFlags::CLONE_NEWNS;
 
+    if enable_user {
+        flags |= CloneFlags::CLONE_NEWUSER;
+    }
     if enable_net {
         flags |= CloneFlags::CLONE_NEWNET;
     }
 
-    unshare(flags).context("Failed to unshare namespaces")?;
+    unshare(flags).context("Failed to unshare workload namespaces")?;
 
-    tracing::debug!("Created namespaces: user, pid, uts, ipc, mnt{}", if enable_net { ", net" } else { "" });
+    tracing::debug!(
+        "Prepared workload namespaces: pid, uts, ipc, mnt{}{}",
+        if enable_user { ", user" } else { "" },
+        if enable_net { ", net" } else { "" }
+    );
 
     Ok(())
+}
+
+pub fn namespace_snapshot() -> Result<NamespaceSnapshot> {
+    Ok(NamespaceSnapshot {
+        user: namespace_id("user")?,
+        pid: namespace_id("pid")?,
+        pid_for_children: namespace_id("pid_for_children")?,
+        mnt: namespace_id("mnt")?,
+        uts: namespace_id("uts")?,
+        ipc: namespace_id("ipc")?,
+        net: namespace_id("net")?,
+    })
+}
+
+pub fn namespace_id(kind: &str) -> Result<String> {
+    fs::read_link(format!("/proc/thread-self/ns/{kind}"))
+        .with_context(|| format!("Failed to read {kind} namespace id"))
+        .map(|path| path.to_string_lossy().into_owned())
 }
 
 /// Set hostname in UTS namespace
@@ -103,4 +145,21 @@ pub fn setns_net(netns_path: &str) -> Result<()> {
     tracing::debug!("Entered network namespace: {}", netns_path);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn namespace_snapshot_reports_all_expected_links() {
+        let snapshot = namespace_snapshot().expect("namespace snapshot");
+        assert!(snapshot.user.starts_with("user:["));
+        assert!(snapshot.pid.starts_with("pid:["));
+        assert!(snapshot.pid_for_children.starts_with("pid:["));
+        assert!(snapshot.mnt.starts_with("mnt:["));
+        assert!(snapshot.uts.starts_with("uts:["));
+        assert!(snapshot.ipc.starts_with("ipc:["));
+        assert!(snapshot.net.starts_with("net:["));
+    }
 }
