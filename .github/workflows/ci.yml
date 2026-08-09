@@ -25,13 +25,13 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Cargo check
-        run: cargo check --all-targets
+        run: cargo check --locked --all-targets
 
       - name: Cargo test
-        run: cargo test --lib --tests --no-fail-fast
+        run: cargo test --locked --lib --tests --no-fail-fast
 
       - name: Benchmark target smoke build
-        run: cargo bench --bench manifest_and_events --no-run
+        run: cargo bench --locked --bench manifest_and_events --no-run
 
       - name: Record capability validation environment
         env:
@@ -53,7 +53,7 @@ jobs:
         run: |
           set -o pipefail
           sudo env "PATH=$PATH" "HOME=$HOME" \
-            cargo test --test capability_enforcement \
+            cargo test --locked --test capability_enforcement \
             privileged_drop_survives_execve \
             -- --ignored --exact --nocapture \
             2>&1 | tee artifacts/capability-enforcement/privileged-test.log
@@ -67,7 +67,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Build isolation postcondition probe
-        run: cargo build --bin gl-isolation-evidence
+        run: cargo build --locked --bin gl-isolation-evidence
 
       - name: Rootful pivot_root and seccomp postconditions
         env:
@@ -124,7 +124,7 @@ jobs:
         run: |
           set -o pipefail
           sudo env "PATH=$PATH" "HOME=$HOME" \
-            cargo test --test namespace_boundary \
+            cargo test --locked --test namespace_boundary \
             privileged_supervisor_stays_outside_workload_namespaces \
             -- --ignored --exact --nocapture \
             2>&1 | tee artifacts/namespace-boundary/privileged-test.log
