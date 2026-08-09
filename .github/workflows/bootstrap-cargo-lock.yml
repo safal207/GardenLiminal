@@ -1,0 +1,39 @@
+name: Bootstrap Cargo.lock
+
+on:
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+jobs:
+  bootstrap:
+    if: github.head_ref == 'agent/commit-cargo-lock'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          persist-credentials: true
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Generate lockfile
+        run: |
+          set -euo pipefail
+          cargo generate-lockfile
+          sha256sum Cargo.lock | tee Cargo.lock.sha256
+
+      - name: Commit lockfile and remove one-shot bootstrap workflow
+        run: |
+          set -euo pipefail
+          LOCK_SHA="$(awk '{print $1}' Cargo.lock.sha256)"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          rm Cargo.lock.sha256 .github/workflows/bootstrap-cargo-lock.yml
+          git add Cargo.lock .github/workflows/bootstrap-cargo-lock.yml
+          git commit -m "build: commit Cargo.lock sha256=${LOCK_SHA}"
+          git push origin HEAD:${{ github.head_ref }}
