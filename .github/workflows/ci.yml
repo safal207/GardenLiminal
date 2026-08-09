@@ -65,3 +65,41 @@ jobs:
           name: capability-enforcement-${{ github.run_id }}
           path: artifacts/capability-enforcement
           if-no-files-found: warn
+
+      - name: Build isolation postcondition probe
+        run: cargo build --bin gl-isolation-evidence
+
+      - name: Rootful pivot_root and seccomp postconditions
+        env:
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/isolation-postconditions
+          HOST_MNT_BEFORE="$(readlink /proc/self/ns/mnt)"
+          {
+            echo "source_sha=$SOURCE_SHA"
+            echo "workflow_sha=$GITHUB_SHA"
+            echo "host_mount_namespace_before=$HOST_MNT_BEFORE"
+            uname -a
+            rustc --version
+            cargo --version
+            cat /etc/os-release
+          } | tee artifacts/isolation-postconditions/environment.txt
+
+          sudo ./target/debug/gl-isolation-evidence pivot-root \
+            2>&1 | tee artifacts/isolation-postconditions/pivot-root.log
+          sudo ./target/debug/gl-isolation-evidence seccomp \
+            2>&1 | tee artifacts/isolation-postconditions/seccomp.log
+
+          HOST_MNT_AFTER="$(readlink /proc/self/ns/mnt)"
+          echo "host_mount_namespace_after=$HOST_MNT_AFTER" \
+            | tee -a artifacts/isolation-postconditions/environment.txt
+          test "$HOST_MNT_BEFORE" = "$HOST_MNT_AFTER"
+
+      - name: Upload isolation postcondition evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: isolation-postconditions-${{ github.run_id }}
+          path: artifacts/isolation-postconditions
+          if-no-files-found: warn
