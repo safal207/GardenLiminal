@@ -112,7 +112,7 @@ impl ProcessRunner {
             .apply_child()
             .context("Failed to apply child isolation")?;
 
-        // Emit events for each isolation step
+        // Emit events for each successfully applied isolation step.
         let evt = events.mount_done("Mounts configured");
         store.append_event(&run_id, &evt.to_json()?)?;
 
@@ -121,8 +121,14 @@ impl ProcessRunner {
             store.append_event(&run_id, &evt.to_json()?)?;
         }
 
-        let evt = events.caps_dropped();
-        store.append_event(&run_id, &evt.to_json()?)?;
+        // Never claim capability enforcement when no capability policy was
+        // requested. A non-empty policy currently fails closed inside
+        // drop_capabilities() until kernel enforcement is implemented, so this
+        // event will become reachable only when real enforcement succeeds.
+        if !seed.security.drop_caps.is_empty() {
+            let evt = events.caps_dropped();
+            store.append_event(&run_id, &evt.to_json()?)?;
+        }
 
         if seed.security.seccomp_profile.is_some() {
             let evt = events.seccomp_enabled();
