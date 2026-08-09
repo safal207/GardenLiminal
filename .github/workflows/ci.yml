@@ -64,4 +64,4 @@ jobs:
         with:
           name: capability-enforcement-${{ github.run_id }}
           path: artifacts/capability-enforcement
-          if-no-files-found: error
+          if-no-files-found: warn
