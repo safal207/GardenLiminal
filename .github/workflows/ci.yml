@@ -32,3 +32,36 @@ jobs:
 
       - name: Benchmark target smoke build
         run: cargo bench --bench manifest_and_events --no-run
+
+      - name: Record capability validation environment
+        env:
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          mkdir -p artifacts/capability-enforcement
+          {
+            echo "source_sha=$SOURCE_SHA"
+            echo "workflow_sha=$GITHUB_SHA"
+            echo "runner_os=$RUNNER_OS"
+            uname -a
+            rustc --version
+            cargo --version
+            echo "cap_last_cap=$(cat /proc/sys/kernel/cap_last_cap)"
+            cat /etc/os-release
+          } | tee artifacts/capability-enforcement/environment.txt
+
+      - name: Privileged capability enforcement + execve smoke
+        run: |
+          set -o pipefail
+          sudo env "PATH=$PATH" "HOME=$HOME" \
+            cargo test --test capability_enforcement \
+            privileged_drop_survives_execve \
+            -- --ignored --exact --nocapture \
+            2>&1 | tee artifacts/capability-enforcement/privileged-test.log
+
+      - name: Upload capability enforcement evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: capability-enforcement-${{ github.run_id }}
+          path: artifacts/capability-enforcement
+          if-no-files-found: warn
