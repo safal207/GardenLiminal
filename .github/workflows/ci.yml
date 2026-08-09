@@ -103,3 +103,36 @@ jobs:
           name: isolation-postconditions-${{ github.run_id }}
           path: artifacts/isolation-postconditions
           if-no-files-found: warn
+
+      - name: Record namespace boundary environment
+        env:
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          mkdir -p artifacts/namespace-boundary
+          {
+            echo "source_sha=$SOURCE_SHA"
+            echo "workflow_sha=$GITHUB_SHA"
+            echo "runner_os=$RUNNER_OS"
+            uname -a
+            rustc --version
+            cargo --version
+            echo "unprivileged_userns_clone=$(cat /proc/sys/kernel/unprivileged_userns_clone 2>/dev/null || echo unavailable)"
+            cat /etc/os-release
+          } | tee artifacts/namespace-boundary/environment.txt
+
+      - name: Privileged supervisor namespace boundary smoke
+        run: |
+          set -o pipefail
+          sudo env "PATH=$PATH" "HOME=$HOME" \
+            cargo test --test namespace_boundary \
+            privileged_supervisor_stays_outside_workload_namespaces \
+            -- --ignored --exact --nocapture \
+            2>&1 | tee artifacts/namespace-boundary/privileged-test.log
+
+      - name: Upload namespace boundary evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: namespace-boundary-${{ github.run_id }}
+          path: artifacts/namespace-boundary
+          if-no-files-found: warn

@@ -10,8 +10,9 @@ pub mod dns;
 
 use anyhow::Result;
 use crate::seed::Seed;
+use std::path::PathBuf;
 
-/// Isolation configuration aggregator
+/// Isolation configuration aggregator.
 pub struct IsolationConfig<'a> {
     pub seed: &'a Seed,
     pub run_id: String,
@@ -22,38 +23,39 @@ impl<'a> IsolationConfig<'a> {
         Self { seed, run_id }
     }
 
-    /// Apply all isolation settings (parent process side)
-    pub fn apply_parent(&self) -> Result<()> {
-        // Create cgroups and add process to them
-        if self.should_apply_cgroups() {
-            cgroups::setup_cgroups(self)?;
+    /// Prepare host-side resources without moving the supervisor into the
+    /// workload's namespaces or cgroup.
+    ///
+    /// Returns the prepared cgroup path only when the Seed requested native
+    /// CPU/memory/PID limits. The caller moves the isolated workload PID into
+    /// that cgroup before releasing it.
+    pub fn apply_parent(&self) -> Result<Option<PathBuf>> {
+        if self.cgroups_requested() {
+            Ok(Some(cgroups::setup_cgroups(self)?))
+        } else {
+            Ok(None)
         }
-
-        Ok(())
     }
 
-    /// Apply all isolation settings (child process side)
+    /// Apply isolation that must happen inside the already-created workload
+    /// task. User-namespace UID/GID maps are installed by the host supervisor
+    /// before this task is released.
     pub fn apply_child(&self) -> Result<()> {
-        // Set hostname
+        if self.seed.user.map_rootless {
+            idmap::verify_current_identity(&self.seed.user)?;
+        }
+
         if let Some(ref hostname) = self.seed.security.hostname {
             ns::set_hostname(hostname)?;
         }
 
-        // Setup mounts
         mount::setup_mounts(self)?;
 
-        // Setup UID/GID mapping if rootless
-        if self.seed.user.map_rootless {
-            idmap::apply_uid_gid_mapping(&self.seed.user)?;
-        }
-
-        // Set no_new_privs first — required before applying seccomp without CAP_SYS_ADMIN
+        // no_new_privs must precede capability enforcement and seccomp.
         ns::set_no_new_privs()?;
 
-        // Drop capabilities
         caps::drop_capabilities(&self.seed.security.drop_caps)?;
 
-        // Apply seccomp (must come after no_new_privs)
         if let Some(ref profile) = self.seed.security.seccomp_profile {
             seccomp::apply_seccomp(profile)?;
         }
@@ -61,7 +63,7 @@ impl<'a> IsolationConfig<'a> {
         Ok(())
     }
 
-    fn should_apply_cgroups(&self) -> bool {
+    pub fn cgroups_requested(&self) -> bool {
         self.seed.limits.cpu.shares.is_some()
             || self.seed.limits.memory.max.is_some()
             || self.seed.limits.pids.max.is_some()
