@@ -43,12 +43,16 @@ pub fn set_hostname(hostname: &str) -> Result<()> {
     Ok(())
 }
 
-/// Set no_new_privs to prevent privilege escalation
+/// Set no_new_privs to prevent privilege escalation.
 pub fn set_no_new_privs() -> Result<()> {
-    // Write to /proc/self/status or use prctl
-    // For now, use prctl via libc
     unsafe {
-        let ret = nix::libc::prctl(nix::libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+        let ret = nix::libc::prctl(
+            nix::libc::PR_SET_NO_NEW_PRIVS,
+            1 as nix::libc::c_ulong,
+            0 as nix::libc::c_ulong,
+            0 as nix::libc::c_ulong,
+            0 as nix::libc::c_ulong,
+        );
         if ret != 0 {
             anyhow::bail!("Failed to set no_new_privs: {}", std::io::Error::last_os_error());
         }
