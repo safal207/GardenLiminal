@@ -1,33 +1,28 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 
-/// Drop capabilities
+/// Apply the requested capability-drop policy.
 ///
-/// For MVP, we'll use a simplified approach.
-/// In production, use libcap or caps crate for proper capability management.
+/// GardenLiminal does not yet have a kernel-enforced capability implementation.
+/// Returning `Ok(())` for a non-empty policy would create false security
+/// evidence, because the caller may record `CAPS_DROPPED` even though no Linux
+/// capability state changed. Until real enforcement and post-condition
+/// verification are implemented, a requested drop policy must fail closed.
 pub fn drop_capabilities(caps_to_drop: &[String]) -> Result<()> {
     if caps_to_drop.is_empty() {
-        tracing::debug!("No capabilities to drop");
+        tracing::debug!("No capabilities requested for dropping");
         return Ok(());
     }
 
-    // For MVP: just log what we would drop
-    // In production, use capset syscall or libcap bindings
-    tracing::debug!("Would drop capabilities: {:?}", caps_to_drop);
-
-    // TODO: Implement actual capability dropping
-    // This requires either:
-    // 1. Using libcap through FFI
-    // 2. Using the caps crate
-    // 3. Direct capset syscall
-    //
-    // For now, we rely on no_new_privs and seccomp to provide security
-
-    tracing::warn!("Capability dropping not yet fully implemented (MVP)");
-
-    Ok(())
+    anyhow::bail!(
+        "Capability dropping was requested ({:?}) but kernel enforcement is not implemented; refusing to continue",
+        caps_to_drop
+    );
 }
 
-/// Get capability name to number mapping
+/// Get capability name to number mapping.
+///
+/// Kept as the basis for the future kernel-enforced implementation. It must not
+/// be interpreted as evidence that capability dropping is active today.
 #[allow(dead_code)]
 fn cap_name_to_num(name: &str) -> Option<u32> {
     match name {
@@ -70,5 +65,24 @@ fn cap_name_to_num(name: &str) -> Option<u32> {
         "CAP_BLOCK_SUSPEND" => Some(36),
         "CAP_AUDIT_READ" => Some(37),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_policy_is_a_noop() {
+        assert!(drop_capabilities(&[]).is_ok());
+    }
+
+    #[test]
+    fn requested_drop_fails_closed_until_enforced() {
+        let requested = vec!["CAP_SYS_ADMIN".to_string()];
+        let err = drop_capabilities(&requested).expect_err("unenforced capability policy must fail");
+        let message = err.to_string();
+        assert!(message.contains("not implemented"));
+        assert!(message.contains("CAP_SYS_ADMIN"));
     }
 }
