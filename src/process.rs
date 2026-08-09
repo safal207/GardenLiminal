@@ -21,6 +21,8 @@ const BOOTSTRAP_FAILURE_EXIT: i32 = 125;
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum SupervisorMessage {
+    MappingRequest,
+    MappingComplete { uid_map: String, gid_map: String },
     Event { event: Event },
     Outcome { code: i32 },
 }
@@ -30,6 +32,7 @@ enum SupervisorMessage {
 /// Trust boundary:
 /// - this host supervisor owns durable audit/store connectivity;
 /// - a bootstrap child enters workload namespaces;
+/// - rootless ID maps are written by this host-side parent after user-ns entry;
 /// - the bootstrap forks PID 1 in the new PID namespace;
 /// - workload lifecycle events cross back over an inherited AF_UNIX socket;
 /// - the control socket is close-on-exec and is never exposed to workload code.
@@ -57,7 +60,6 @@ impl ProcessRunner {
         let start_ts = Utc::now().to_rfc3339();
         self.store
             .create_run(&self.run_id, &self.seed.meta.id, &start_ts)?;
-
         self.append_event(&events.run_created())?;
         self.append_event(&events.seed_loaded())?;
 
@@ -70,7 +72,7 @@ impl ProcessRunner {
         let host_uid = ns::get_uid();
         let host_gid = ns::get_gid();
 
-        let (parent_channel, child_channel) =
+        let (mut parent_channel, child_channel) =
             UnixStream::pair().context("Create supervisor control socket")?;
         set_cloexec(&parent_channel)?;
         set_cloexec(&child_channel)?;
@@ -82,44 +84,77 @@ impl ProcessRunner {
             ForkResult::Parent { child } => {
                 drop(child_channel);
 
-                // Make the bootstrap the process-group leader so a fatal host
-                // supervision error can terminate the whole local workload tree.
                 unistd::setpgid(child, child)
                     .context("Failed to establish bootstrap process group")?;
 
                 if uses_cgroups(&self.seed) {
                     if let Err(err) = cgroups::move_seed_pid_to_cgroup(&self.seed.meta.id, child.as_raw()) {
-                        let _ = killpg(child, Signal::SIGKILL);
-                        let _ = wait_for_pid(child);
-                        self.cleanup()?;
-                        return Err(err).context("Failed to move bootstrap into workload cgroup");
+                        return self.abort_supervision(
+                            child,
+                            format!("Failed to move bootstrap into workload cgroup: {err:#}"),
+                            &host_ns_before,
+                        );
                     }
                     self.append_event(&events.cgroup_applied())?;
+                }
+
+                if self.seed.user.map_rootless {
+                    if let Err(err) = self.complete_rootless_mapping(
+                        child,
+                        &mut parent_channel,
+                        host_uid,
+                        host_gid,
+                    ) {
+                        return self.abort_supervision(
+                            child,
+                            format!("Rootless mapping handshake failed: {err:#}"),
+                            &host_ns_before,
+                        );
+                    }
                 }
 
                 self.supervise_bootstrap(child, parent_channel, host_ns_before)
             }
             ForkResult::Child => {
                 drop(parent_channel);
-                let code = Self::bootstrap_workload(
-                    seed_clone,
-                    run_id_clone,
-                    child_channel,
-                    host_uid,
-                    host_gid,
-                );
+                let code = Self::bootstrap_workload(seed_clone, run_id_clone, child_channel);
                 std::process::exit(code);
             }
         }
     }
 
-    fn bootstrap_workload(
-        seed: Seed,
-        run_id: String,
-        mut channel: UnixStream,
+    fn complete_rootless_mapping(
+        &self,
+        bootstrap_pid: Pid,
+        channel: &mut UnixStream,
         host_uid: u32,
         host_gid: u32,
-    ) -> i32 {
+    ) -> Result<()> {
+        match read_message(channel).context("Read rootless mapping request")? {
+            SupervisorMessage::MappingRequest => {}
+            other => anyhow::bail!("Expected mapping_request, got {:?}", other),
+        }
+
+        let applied = idmap::configure_child_uid_gid_mapping(
+            bootstrap_pid.as_raw(),
+            &self.seed.user,
+            host_uid,
+            host_gid,
+        )
+        .context("Configure child rootless UID/GID map from host supervisor")?;
+
+        send_message(
+            channel,
+            &SupervisorMessage::MappingComplete {
+                uid_map: applied.uid_map,
+                gid_map: applied.gid_map,
+            },
+        )
+        .context("Send mapping completion to namespace bootstrap")?;
+        Ok(())
+    }
+
+    fn bootstrap_workload(seed: Seed, run_id: String, mut channel: UnixStream) -> i32 {
         let events = EventBuilder::new(run_id.clone(), seed.meta.id.clone());
 
         let setup = (|| -> Result<Option<(String, String)>> {
@@ -127,9 +162,14 @@ impl ProcessRunner {
                 .context("Failed to create workload namespaces")?;
 
             if seed.user.map_rootless {
-                idmap::configure_uid_gid_mapping(&seed.user, host_uid, host_gid)
-                    .context("Failed to configure rootless UID/GID map")?;
-                Ok(Some((idmap::read_uid_map()?, idmap::read_gid_map()?)))
+                send_message(&mut channel, &SupervisorMessage::MappingRequest)
+                    .context("Request rootless mapping from host supervisor")?;
+                match read_message(&mut channel).context("Wait for rootless mapping completion")? {
+                    SupervisorMessage::MappingComplete { uid_map, gid_map } => {
+                        Ok(Some((uid_map, gid_map)))
+                    }
+                    other => anyhow::bail!("Expected mapping_complete, got {:?}", other),
+                }
             } else {
                 Ok(None)
             }
@@ -138,7 +178,10 @@ impl ProcessRunner {
         let rootless_maps = match setup {
             Ok(maps) => maps,
             Err(err) => {
-                let _ = send_event(&mut channel, events.process_failed(&format!("Namespace bootstrap failed: {err:#}")));
+                let _ = send_event(
+                    &mut channel,
+                    events.process_failed(&format!("Namespace bootstrap failed: {err:#}")),
+                );
                 let _ = send_message(
                     &mut channel,
                     &SupervisorMessage::Outcome {
@@ -223,8 +266,6 @@ impl ProcessRunner {
     ) -> Result<()> {
         let events = EventBuilder::new(run_id.clone(), seed.meta.id.clone());
 
-        // This child is the first child after CLONE_NEWPID and therefore must
-        // be PID 1 from the workload's namespace perspective.
         let namespace_pid = unistd::getpid().as_raw();
         if namespace_pid != 1 {
             anyhow::bail!(
@@ -256,8 +297,8 @@ impl ProcessRunner {
             let evt = events.idmap_applied().with_data(serde_json::json!({
                 "uid": unistd::getuid().as_raw(),
                 "gid": unistd::getgid().as_raw(),
-                "uid_map": uid_map.trim(),
-                "gid_map": gid_map.trim(),
+                "uid_map": uid_map,
+                "gid_map": gid_map,
             }));
             send_event(channel, evt)?;
         }
@@ -265,14 +306,12 @@ impl ProcessRunner {
         if !seed.security.drop_caps.is_empty() {
             send_event(channel, events.caps_dropped())?;
         }
-
         if seed.security.seccomp_profile.is_some() {
             send_event(channel, events.seccomp_enabled())?;
         }
 
         std::env::set_current_dir(&seed.entrypoint.cwd)
             .with_context(|| format!("Failed to chdir to {}", seed.entrypoint.cwd))?;
-
         for env_var in &seed.entrypoint.env {
             if let Some(eq_pos) = env_var.find('=') {
                 std::env::set_var(&env_var[..eq_pos], &env_var[eq_pos + 1..]);
@@ -351,15 +390,20 @@ impl ProcessRunner {
                     }
                     self.append_event(&event)?;
                 }
-                SupervisorMessage::Outcome { code } => {
-                    outcome = Some(code);
+                SupervisorMessage::Outcome { code } => outcome = Some(code),
+                unexpected @ (SupervisorMessage::MappingRequest
+                | SupervisorMessage::MappingComplete { .. }) => {
+                    return self.abort_supervision(
+                        bootstrap_pid,
+                        format!("Unexpected mapping message after handshake: {:?}", unexpected),
+                        &host_ns_before,
+                    );
                 }
             }
         }
 
         let bootstrap_wait = wait_for_pid(bootstrap_pid)
             .context("Failed waiting for namespace bootstrap")?;
-
         let code = outcome.unwrap_or_else(|| match bootstrap_wait {
             WaitStatus::Exited(_, code) => code,
             WaitStatus::Signaled(_, signal, _) => 128 + signal as i32,
@@ -436,14 +480,12 @@ impl ProcessRunner {
     fn store_seed_manifest(&self) -> Result<()> {
         let yaml = serde_yaml::to_string(&self.seed)
             .context("Failed to serialize seed to YAML")?;
-
         let record = SeedRecord {
             id: self.seed.meta.id.clone(),
             name: self.seed.meta.name.clone(),
             manifest_yaml: yaml,
             created_at: Utc::now().to_rfc3339(),
         };
-
         self.store.upsert_seed(record)?;
         Ok(())
     }
@@ -465,6 +507,17 @@ fn send_message(channel: &mut UnixStream, message: &SupervisorMessage) -> Result
     channel.write_all(b"\n").context("Write supervisor message delimiter")?;
     channel.flush().context("Flush supervisor message")?;
     Ok(())
+}
+
+fn read_message(channel: &mut UnixStream) -> Result<SupervisorMessage> {
+    let clone = channel.try_clone().context("Clone supervisor channel for read")?;
+    let mut reader = BufReader::new(clone);
+    let mut line = String::new();
+    let bytes = reader.read_line(&mut line).context("Read supervisor message")?;
+    if bytes == 0 {
+        anyhow::bail!("Supervisor channel closed before expected message");
+    }
+    serde_json::from_str(line.trim_end()).context("Decode supervisor message")
 }
 
 fn set_cloexec(stream: &UnixStream) -> Result<()> {
@@ -514,6 +567,28 @@ mod tests {
                 assert_eq!(event.data.unwrap()["pid1"], true);
             }
             _ => panic!("expected event message"),
+        }
+    }
+
+    #[test]
+    fn mapping_handshake_messages_roundtrip() {
+        let request = serde_json::to_string(&SupervisorMessage::MappingRequest).unwrap();
+        assert!(matches!(
+            serde_json::from_str::<SupervisorMessage>(&request).unwrap(),
+            SupervisorMessage::MappingRequest
+        ));
+
+        let complete = SupervisorMessage::MappingComplete {
+            uid_map: "1000 501 1".into(),
+            gid_map: "1000 20 1".into(),
+        };
+        let encoded = serde_json::to_string(&complete).unwrap();
+        match serde_json::from_str::<SupervisorMessage>(&encoded).unwrap() {
+            SupervisorMessage::MappingComplete { uid_map, gid_map } => {
+                assert_eq!(uid_map, "1000 501 1");
+                assert_eq!(gid_map, "1000 20 1");
+            }
+            _ => panic!("expected mapping_complete"),
         }
     }
 }
