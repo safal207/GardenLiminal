@@ -16,7 +16,7 @@ jobs:
       - name: Install system deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libssl-dev
+          sudo apt-get install -y pkg-config libssl-dev busybox-static
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -66,8 +66,8 @@ jobs:
           path: artifacts/capability-enforcement
           if-no-files-found: warn
 
-      - name: Build isolation postcondition probe
-        run: cargo build --bin gl-isolation-evidence
+      - name: Build isolation postcondition probes
+        run: cargo build --bin gl-isolation-evidence --bin gl-lifecycle-evidence
 
       - name: Rootful pivot_root and seccomp postconditions
         env:
@@ -102,4 +102,46 @@ jobs:
         with:
           name: isolation-postconditions-${{ github.run_id }}
           path: artifacts/isolation-postconditions
+          if-no-files-found: warn
+
+      - name: Full supervisor and namespace lifecycle evidence
+        env:
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/namespace-lifecycle
+          ROOTFS="$(mktemp -d /tmp/gl-lifecycle-rootfs.XXXXXX)"
+          mkdir -p "$ROOTFS/bin"
+          BUSYBOX="$(command -v busybox)"
+          cp "$BUSYBOX" "$ROOTFS/bin/busybox"
+          chmod 0755 "$ROOTFS/bin/busybox"
+
+          {
+            echo "source_sha=$SOURCE_SHA"
+            echo "workflow_sha=$GITHUB_SHA"
+            echo "host_user_ns=$(readlink /proc/self/ns/user)"
+            echo "host_pid_ns=$(readlink /proc/self/ns/pid)"
+            echo "host_mnt_ns=$(readlink /proc/self/ns/mnt)"
+            echo "host_uts_ns=$(readlink /proc/self/ns/uts)"
+            echo "host_ipc_ns=$(readlink /proc/self/ns/ipc)"
+            echo "host_net_ns=$(readlink /proc/self/ns/net)"
+            echo "unprivileged_userns_clone=$(cat /proc/sys/kernel/unprivileged_userns_clone 2>/dev/null || echo unknown)"
+            uname -a
+            rustc --version
+            cargo --version
+            cat /etc/os-release
+          } | tee artifacts/namespace-lifecycle/environment.txt
+
+          sudo ./target/debug/gl-lifecycle-evidence rootful "$ROOTFS" \
+            2>&1 | tee artifacts/namespace-lifecycle/rootful.log
+
+          ./target/debug/gl-lifecycle-evidence rootless "$ROOTFS" \
+            2>&1 | tee artifacts/namespace-lifecycle/rootless.log
+
+      - name: Upload namespace lifecycle evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: namespace-lifecycle-${{ github.run_id }}
+          path: artifacts/namespace-lifecycle
           if-no-files-found: warn
