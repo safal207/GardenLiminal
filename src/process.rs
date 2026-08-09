@@ -103,9 +103,7 @@ impl ProcessRunner {
         let child_pid = match unsafe {
             clone(
                 Box::new(move || {
-                    unsafe {
-                        nix::libc::close(supervisor_peer_fd);
-                    }
+                    nix::libc::close(supervisor_peer_fd);
 
                     let mut start = [0u8; 1];
                     if let Err(err) = child_control.read_exact(&mut start) {
@@ -118,8 +116,8 @@ impl ProcessRunner {
                     }
 
                     match Self::child_exec_static(
-                        seed_for_child,
-                        run_id_for_child,
+                        &seed_for_child,
+                        &run_id_for_child,
                         &mut child_control,
                     ) {
                         Ok(()) => 0,
@@ -357,8 +355,8 @@ impl ProcessRunner {
     }
 
     fn child_exec_static(
-        seed: Seed,
-        run_id: String,
+        seed: &Seed,
+        run_id: &str,
         control: &mut UnixStream,
     ) -> Result<()> {
         if seed.user.map_rootless {
@@ -377,7 +375,7 @@ impl ProcessRunner {
             },
         )?;
 
-        let iso_config = IsolationConfig::new(&seed, run_id);
+        let iso_config = IsolationConfig::new(seed, run_id.to_string());
         iso_config
             .apply_child()
             .context("Failed to apply child isolation")?;
