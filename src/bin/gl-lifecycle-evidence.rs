@@ -43,26 +43,16 @@ impl EvidenceStore {
 }
 
 impl Store for EvidenceStore {
-    fn upsert_seed(&self, _s: SeedRecord) -> Result<()> {
-        self.assert_host_side()
-    }
-
+    fn upsert_seed(&self, _s: SeedRecord) -> Result<()> { self.assert_host_side() }
     fn create_run(&self, _run_id: &str, _seed_id: &str, _start_ts: &str) -> Result<()> {
         self.assert_host_side()
     }
-
     fn append_event(&self, _run_id: &str, event: &Value) -> Result<()> {
         self.assert_host_side()?;
         self.events.lock().unwrap().push(event.clone());
         Ok(())
     }
-
-    fn update_run_status(
-        &self,
-        _run_id: &str,
-        status: RunStatus,
-        _end_ts: Option<&str>,
-    ) -> Result<()> {
+    fn update_run_status(&self, _run_id: &str, status: RunStatus, _end_ts: Option<&str>) -> Result<()> {
         self.assert_host_side()?;
         self.statuses.lock().unwrap().push(format!("{:?}", status));
         Ok(())
@@ -71,13 +61,8 @@ impl Store for EvidenceStore {
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
-    let mode = args
-        .next()
-        .context("usage: gl-lifecycle-evidence <rootful|rootless> <rootfs>")?;
-    let rootfs = PathBuf::from(
-        args.next()
-            .context("usage: gl-lifecycle-evidence <rootful|rootless> <rootfs>")?,
-    );
+    let mode = args.next().context("usage: gl-lifecycle-evidence <rootful|rootless> <rootfs>")?;
+    let rootfs = PathBuf::from(args.next().context("usage: gl-lifecycle-evidence <rootful|rootless> <rootfs>")?);
     let rootless = match mode.as_str() {
         "rootful" => false,
         "rootless" => true,
@@ -88,6 +73,11 @@ fn main() -> Result<()> {
     let host_uid = ns::get_uid();
     let host_gid = ns::get_gid();
     let store = Arc::new(EvidenceStore::new(host_before.clone()));
+
+    // The bounded rootless mode maps namespace root 0:0 to the current host
+    // UID/GID. Rootful evidence keeps the historical default 1000:1000 because
+    // no user-namespace mapping is requested on that path.
+    let (workload_uid, workload_gid) = if rootless { (0, 0) } else { (1000, 1000) };
 
     let seed = Seed {
         api_version: "v0".to_string(),
@@ -107,16 +97,17 @@ fn main() -> Result<()> {
         mounts: Vec::<MountConfig>::new(),
         security: SecurityConfig::default(),
         user: UserConfig {
-            uid: 1000,
-            gid: 1000,
+            uid: workload_uid,
+            gid: workload_gid,
             map_rootless: rootless,
         },
         logging: LoggingConfig::default(),
         store: StoreConfig::default(),
     };
 
-    let runner = ProcessRunner::new(seed, store.clone());
-    let exit_code = runner.run().context("ProcessRunner evidence run")?;
+    let exit_code = ProcessRunner::new(seed, store.clone())
+        .run()
+        .context("ProcessRunner evidence run")?;
 
     let host_after = ns::namespace_snapshot().context("host namespace snapshot after run")?;
     let events = store.events.lock().unwrap().clone();
@@ -145,13 +136,11 @@ fn main() -> Result<()> {
         anyhow::bail!("host namespace IDs changed across ProcessRunner run");
     }
 
-    let ns_event = events
-        .iter()
+    let ns_event = events.iter()
         .find(|event| event["event"] == json!(EventType::NsCreated))
         .context("missing NS_CREATED evidence")?;
-    let namespaces: NamespaceSnapshot =
-        serde_json::from_value(ns_event["data"]["namespaces"].clone())
-            .context("decode workload namespace snapshot")?;
+    let namespaces: NamespaceSnapshot = serde_json::from_value(ns_event["data"]["namespaces"].clone())
+        .context("decode workload namespace snapshot")?;
 
     if ns_event["data"]["namespace_pid"] != 1 {
         anyhow::bail!("workload did not report namespace PID 1");
@@ -162,41 +151,34 @@ fn main() -> Result<()> {
         || namespaces.ipc == host_before.ipc
         || namespaces.net == host_before.net
     {
-        anyhow::bail!(
-            "workload namespace post-condition failed: host={:?} workload={:?}",
-            host_before,
-            namespaces
-        );
+        anyhow::bail!("workload namespace post-condition failed: host={:?} workload={:?}", host_before, namespaces);
     }
 
     if rootless {
         if namespaces.user == host_before.user {
             anyhow::bail!("rootless workload did not receive a new user namespace");
         }
-        let idmap_event = events
-            .iter()
+        let idmap_event = events.iter()
             .find(|event| event["event"] == json!(EventType::IdmapApplied))
             .context("missing IDMAP_APPLIED evidence")?;
-        if idmap_event["data"]["uid"] != 1000 || idmap_event["data"]["gid"] != 1000 {
-            anyhow::bail!("mapped workload identity is not 1000:1000");
+        if idmap_event["data"]["uid"] != 0 || idmap_event["data"]["gid"] != 0 {
+            anyhow::bail!("bounded rootless workload identity is not namespace root 0:0");
         }
-        let expected_uid = format!("1000 {} 1", host_uid);
-        let expected_gid = format!("1000 {} 1", host_gid);
+        let expected_uid = format!("0 {} 1", host_uid);
+        let expected_gid = format!("0 {} 1", host_gid);
         if idmap_event["data"]["uid_map"] != expected_uid
             || idmap_event["data"]["gid_map"] != expected_gid
         {
             anyhow::bail!(
                 "rootless map evidence mismatch: uid_map={} gid_map={}",
-                idmap_event["data"]["uid_map"],
-                idmap_event["data"]["gid_map"]
+                idmap_event["data"]["uid_map"], idmap_event["data"]["gid_map"]
             );
         }
     } else if namespaces.user != host_before.user {
         anyhow::bail!("rootful path unexpectedly changed user namespace");
     }
 
-    let start = events
-        .iter()
+    let start = events.iter()
         .find(|event| event["event"] == json!(EventType::ProcessStart))
         .context("missing PROCESS_START evidence")?;
     if start["data"]["pid1"] != true || start["data"]["namespace_pid"] != 1 {
@@ -222,6 +204,7 @@ fn main() -> Result<()> {
             "workload_pid1": true,
             "network_namespace_isolated": true,
             "rootless_user_namespace": rootless,
+            "rootless_mapping_contract": if rootless { "namespace-root-single-id" } else { "none" },
             "statuses": statuses,
             "event_count": events.len(),
         }))?
