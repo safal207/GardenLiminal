@@ -2,7 +2,7 @@
 
 > A process isolation runtime where every lifecycle event is a first-class citizen.
 
-GardenLiminal runs processes in isolated containers using Linux namespaces, cgroups v2, and seccomp — and emits a structured audit trail for every step it takes. It is designed to work natively with [LiminalDB](https://github.com/safal207/LiminalBD), a biological-inspired event store that remembers the full history of your workloads.
+GardenLiminal runs processes in isolated containers using Linux namespaces, cgroups v2, and seccomp — and emits a structured audit trail for every step it takes. It is designed to work natively with [LiminalDB](https://github.com/safal207/LiminalDB), a biological-inspired event store that remembers the full history of your workloads.
 
 ```
 seed planted → namespaces created → cgroups applied →
@@ -104,7 +104,7 @@ sudo ./target/release/gl garden run -f examples/garden-echo.yaml --store mem
 
 ## LiminalDB Integration
 
-GardenLiminal connects to [LiminalDB](https://github.com/safal207/LiminalBD) via WebSocket and sends every lifecycle event as an impulse.
+GardenLiminal connects to [LiminalDB](https://github.com/safal207/LiminalDB) via WebSocket and sends every lifecycle event as an impulse.
 
 ```bash
 # Start LiminalDB
@@ -346,4 +346,4 @@ MIT
 GardenLiminal is part of a two-project ecosystem:
 
 - **GardenLiminal** — the runtime. Plants seeds, grows gardens, records every moment.
-- **[LiminalDB](https://github.com/safal207/LiminalBD)** — the memory. Stores impulses, replays timelines, queries history.
+- **[LiminalDB](https://github.com/safal207/LiminalDB)** — the memory. Stores impulses, replays timelines, queries history.
