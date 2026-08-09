@@ -36,8 +36,14 @@ impl ProcStatus {
     }
 }
 
+// Linux capability sets and no_new_privs are task/thread credentials. Rust's
+// test harness executes tests on worker threads, so /proc/self/status can show
+// the thread-group leader rather than the calling test thread. thread-self
+// always resolves to the task performing this read and therefore measures the
+// same kernel credential state changed by prctl/capset below.
 fn status_text() -> String {
-    std::fs::read_to_string("/proc/self/status").expect("read /proc/self/status")
+    std::fs::read_to_string("/proc/thread-self/status")
+        .expect("read /proc/thread-self/status")
 }
 
 fn parse_status(status: &str) -> ProcStatus {
@@ -76,9 +82,9 @@ fn parse_status(status: &str) -> ProcStatus {
 
 /// Privileged Linux evidence test.
 ///
-/// This permanently lowers CAP_NET_RAW in the test process, so normal test
-/// runs keep it ignored. CI executes this integration test in its own sudo
-/// process after all ordinary build/test work has completed.
+/// This permanently lowers CAP_NET_RAW in the calling test thread, so normal
+/// test runs keep it ignored. CI executes this integration test in its own sudo
+/// test process after all ordinary build/test work has completed.
 #[test]
 #[ignore = "requires isolated privileged Linux capability environment"]
 fn privileged_drop_survives_execve() {
@@ -119,13 +125,13 @@ fn privileged_drop_survives_execve() {
     assert_eq!(after.no_new_privs, 1);
     after.assert_cap_absent(CAP_NET_RAW);
 
-    // Command::output() creates a child and execs /bin/sh. Reading status in
-    // that process proves the dropped capability did not reappear across the
-    // supported no_new_privs + execve transition.
+    // Command::output() creates a child and execs /bin/sh. Reading the child
+    // shell's calling-task status proves the dropped capability did not
+    // reappear across the supported no_new_privs + execve transition.
     let output = Command::new("/bin/sh")
         .args([
             "-c",
-            "grep -E '^(CapInh|CapPrm|CapEff|CapBnd|CapAmb|NoNewPrivs):' /proc/self/status",
+            "grep -E '^(CapInh|CapPrm|CapEff|CapBnd|CapAmb|NoNewPrivs):' /proc/thread-self/status",
         ])
         .output()
         .expect("exec child status probe");
