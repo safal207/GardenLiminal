@@ -22,9 +22,8 @@ impl<'a> IsolationConfig<'a> {
         Self { seed, run_id }
     }
 
-    /// Apply all isolation settings (parent process side)
+    /// Apply all isolation settings (host supervisor side).
     pub fn apply_parent(&self) -> Result<()> {
-        // Create cgroups and add process to them
         if self.should_apply_cgroups() {
             cgroups::setup_cgroups(self)?;
         }
@@ -32,28 +31,28 @@ impl<'a> IsolationConfig<'a> {
         Ok(())
     }
 
-    /// Apply all isolation settings (child process side)
+    /// Apply isolation inside the PID-1 workload child.
+    ///
+    /// Rootless UID/GID map files are configured by the namespace bootstrap
+    /// immediately after user-namespace creation. This function only enters
+    /// that already-pinned mapped identity after mount setup is complete.
     pub fn apply_child(&self) -> Result<()> {
-        // Set hostname
         if let Some(ref hostname) = self.seed.security.hostname {
             ns::set_hostname(hostname)?;
         }
 
-        // Setup mounts
         mount::setup_mounts(self)?;
 
-        // Setup UID/GID mapping if rootless
         if self.seed.user.map_rootless {
-            idmap::apply_uid_gid_mapping(&self.seed.user)?;
+            idmap::enter_mapped_identity(&self.seed.user)?;
         }
 
-        // Set no_new_privs first — required before applying seccomp without CAP_SYS_ADMIN
+        // Required before unprivileged seccomp installation and blocks later
+        // privilege gain through exec transitions.
         ns::set_no_new_privs()?;
 
-        // Drop capabilities
         caps::drop_capabilities(&self.seed.security.drop_caps)?;
 
-        // Apply seccomp (must come after no_new_privs)
         if let Some(ref profile) = self.seed.security.seccomp_profile {
             seccomp::apply_seccomp(profile)?;
         }
